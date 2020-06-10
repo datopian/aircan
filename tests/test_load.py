@@ -1,9 +1,9 @@
-import os
 import unittest
 
 from sqlalchemy import create_engine
 
-from data_loader import load, config
+import data_loader_config as config
+import data_loader_load as load
 
 
 class LoadTest(unittest.TestCase):
@@ -12,31 +12,31 @@ class LoadTest(unittest.TestCase):
         self.data_resource = {
           'path': '100kb.csv',
           'ckan_resource_id': '5d1af90f-cc57-4271-a990-1116dd1a400e',
-          "schema": {
-            "fields": [
+            'schema': {
+                'fields': [
               {
-                "name": "first_name",
-                "type": "string"
+                        'name': 'first_name',
+                        'type': 'string'
               },
               {
-                "name": "last_name",
-                "type": "string"
+                        'name': 'last_name',
+                        'type': 'string'
               },
               {
-                "name": "email",
-                "type": "string"
+                        'name': 'email',
+                        'type': 'string'
               },
               {
-                "name": "gender",
-                "type": "string"
+                        'name': 'gender',
+                        'type': 'string'
               },
               {
-                "name": "ip_address",
-                "type": "string"
+                        'name': 'ip_address',
+                        'type': 'string'
               },
               {
-                "name": "date",
-                "type": "string"
+                        'name': 'date',
+                        'type': 'string'
               }
             ]
           }
@@ -46,7 +46,8 @@ class LoadTest(unittest.TestCase):
         engine = create_engine(self.config['CKAN_DATASTORE_WRITE_URL'])
         self.conn = engine.raw_connection()
         columns_string = ', '.join(
-            ['%s TEXT' % (f['name']) for f in self.data_resource['schema']['fields']]
+            ['%s TEXT' % (f['name'])
+             for f in self.data_resource['schema']['fields']]
         )
         self.create_cmd = '''CREATE TABLE IF NOT EXISTS "%s" (%s);
         ''' % (self.data_resource['ckan_resource_id'], columns_string)
@@ -88,13 +89,15 @@ class LoadTest(unittest.TestCase):
     def test___restore_indexes_and_set_datastore_active(self):
         cur = self.conn.cursor()
         cur.execute(self.create_cmd)
-        res = load.restore_indexes_and_set_datastore_active(self.data_resource, self.config, self.conn)
+        res = load.restore_indexes_and_set_datastore_active(
+            self.data_resource, self.config, self.conn)
         self.assertTrue(res['success'])
 
     def test___load_csv_to_postgres_via_copy(self):
         cur = self.conn.cursor()
         cur.execute(self.create_cmd)
-        res = load.load_csv_to_postgres_via_copy(self.data_resource, self.config, self.conn)
+        res = load.load_csv_to_postgres_via_copy(
+            self.data_resource, self.config, self.conn)
         self.assertTrue(res['success'])
 
     def test___load_csv_to_postgres_via_copy_data_is_in_db(self):

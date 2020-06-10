@@ -1,19 +1,9 @@
-# Standard library imports
-from urllib.parse import urljoin
 import hashlib
 import logging as log
+from urllib.parse import urljoin
 
-# Third-party library imports
 import psycopg2
 import requests
-
-from sqlalchemy import create_engine
-
-from airflow.models import Variable
-
-# def get_connection():
-#     engine = create_engine(Variable.get('CKAN_DATASTORE_WRITE_URL'))
-#     return engine.raw_connection()
 
 
 def load_csv(data_resource, config={}, connection=None):
@@ -31,10 +21,10 @@ def load_csv(data_resource, config={}, connection=None):
 
 
 def delete_datastore_table(data_resource, config={}):
-    header = {'Authorization': Variable.get('CKAN_SYSADMIN_API_KEY')}
+    header = {'Authorization': config['CKAN_SYSADMIN_API_KEY']}
     try:
         response = requests.post(
-            urljoin(Variable.get('CKAN_SITE_URL'), '/api/3/action/datastore_delete'),
+            urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_delete'),
             headers=header,
             json={
                 "resource_id": data_resource['ckan_resource_id'],
@@ -42,7 +32,7 @@ def delete_datastore_table(data_resource, config={}):
             }
         )
         if response.status_code == 200 or response.status_code == 404:
-            log.info('Table was deleted successfuly')
+            log.info('Table was deleted successfully')
             return {"success": True}
         else:
             return response.json()
@@ -58,18 +48,18 @@ def create_datastore_table(data_resource, config={}):
                 'id': f['name'],
                 'type': 'text'
             } for f in data_resource['schema']['fields']],
-        )
+    )
     data_dict['records'] = None  # just create an empty table
     data_dict['force'] = True
     try:
         response = requests.post(
-            urljoin(Variable.get('CKAN_SITE_URL'), '/api/3/action/datastore_create'),
-            headers={'Authorization': Variable.get('CKAN_SYSADMIN_API_KEY')},
+            urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_create'),
+            headers={'Authorization': config['CKAN_SYSADMIN_API_KEY']},
             json=data_dict
         )
         if response.status_code == 200:
             return {'success': True}
-            log.info('Table was created successfuly')
+            log.info('Table was created successfully')
         else:
             return response.json()
     except Exception as e:
@@ -139,7 +129,7 @@ def restore_indexes_and_set_datastore_active(data_resource,
                 data_resource['ckan_resource_id'], fields_string),
             flds=fields_string))
 
-    # Not sure what this doess
+    # Not sure what this does
     sql_index_strings = map(lambda x: x.replace('%', '%%'), sql_index_strings)
     for sql_index_string in sql_index_strings:
         cur.execute(sql_index_string)
@@ -188,7 +178,7 @@ def load_csv_to_postgres_via_copy(data_resource, config={}, connection=None):
                             delimiter=data_resource['schema'].get(
                                 'delimiter', ','),
                             encoding='UTF8',
-                            ),
+                        ),
                         f)
                 except psycopg2.DataError as e:
                     # E is a str but with foreign chars e.g.

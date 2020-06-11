@@ -32,18 +32,12 @@ dag = DAG(
     tags=['conversion'],
 )
 
-
 data_resource = {
     'path': './r2.csv',
-    'ckan_resource_id': '5d1af90f-cc57-4271-a990-1116dd1a400e',
+    'ckan_resource_id': 'dd61b12d-49c7-4529-a633-7c8388dc773e',
     'schema': {
         'fields': [
-            {'name': 'first_name', 'type': 'string'},
-            {'name': 'last_name', 'type': 'string'},
-            {'name': 'email', 'type': 'string'},
-            {'name': 'gender', 'type': 'string'},
-            {'name': 'ip_address', 'type': 'string'},
-            {'name': 'date', 'type': 'string'},
+            {'name': 'FID', 'type': 'text'}
         ]
     },
 }
@@ -94,5 +88,19 @@ load_csv_to_postgres_via_copy_task = PythonOperator(
     task_id='load_csv_to_postgres_via_copy',
     provide_context=False,
     python_callable=task_load_csv_to_postgres_via_copy,
+    dag=dag,
+)
+
+def task_restore_indexes_and_set_datastore_active():
+    logging.info('Restore Indexes')
+    return load.restore_indexes_and_set_datastore_active(
+        data_resource, {}, get_connection()
+    )
+
+
+restore_indexes_and_set_datastore_active_task = PythonOperator(
+    task_id='restore_indexes_and_set_datastore_active',
+    provide_context=False,
+    python_callable=task_restore_indexes_and_set_datastore_active,
     dag=dag,
 )

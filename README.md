@@ -73,11 +73,26 @@ We'll load a local csv into CKAN DataStore instance.
 We'll assume you have:
 
 * a local CKAN setup and running at https://localhost:5000
-* datastore enabled
-* CKAN API key that is authorized to write with this exported as env variable:
-  ```
-  export CKAN_API_KEY=XXXX
-  ```
+* datastore enabled. If you are using Docker, you might need to expose your Postgres Instance port. For example, add the following in your `docker-composer.yml` file:
+```yml
+db:
+  ports:
+      - "5432:5432"
+```
+(Useful to know: it is possible to access the Postgres on your Docker container. Run `docker ps` and you should see a container named `docker-ckan_db`, which corresponds to CKAN database. Run `docker exec -it CONTAINER_ID bash` and then `psql -U ckan` to access the corresponding Postgres instance).
+
+* Now you need to set up some information on Airflow. Access your local Airflow Connections panel on `http://localhost:8080/admin/connection/`. Create a new connection named `ckan_postgres` with your datastore information. For example, assuming your `CKAN_DATASTORE_WRITE_URL=postgresql://ckan:ckan@db/datastore`, use the following schema:
+
+![Connection configuration](docs/resources/images/aircan_connection.png)
+
+* We also need to set up two environment variables for Airflow. Access the Airflow Variable panel and set up `CKAN_SITE_URL` and your `CKAN_SYSADMIN_API_KEY`:
+
+![Variables configuration](docs/resources/images/aircan_variables.png)
+
+
+[TODO PARAMETERIZE VARS]
+[TODO PARAMETERIZE PATHS]
+
 
 Then create a dataset called `aircan-example` using this script:
 
@@ -89,13 +104,25 @@ python examples/setup-ckan.py --api-key
 
 #### Doing the load
 
+We assume you now have a dataset named `my-first-dataset`.
+
 Create the DAG for loading
 
 ```
-cp aircan/examples/ckan-datastore-from-local.py ~/airflow/dags/
+cp aircan/lib/api_ckan_load.py ~/airflow/dags/
 ```
 
-Run it:
+Check if airflow recognize your DAG with `airflow list_dags`. You should see a DAG named `ckan_load`.
+
+Now you can test each task individually: 
+
+* To delete a datastore, run `airflow test ckan_load delete_datastore_table now`
+* To create a datastore, run `airflow test ckan_load create_datastore_table now`. You can see the corresponding `resource_id` for the datastore on your logs. [TODO JSON is hardcoded now; parameterize on kwargs or some other operator structure]
+* To load a CSV to Postgres, run `airflow test ckan_load load_csv_to_postgres_via_copy now`. [TODO JSON is hardcoded now; insert resource_id on it. File path is also Hardcode, change it]
+* Finally, set your datastore to active: `airflow test ckan_load restore_indexes_and_set_datastore_active now`.
+
+
+To run the entire DAG:
 
 * Select the DAG [screenshot]
 * Configure it with a path to ../your/aircan/examples/example1.csv
@@ -103,7 +130,7 @@ Run it:
 
 Check the output
 
-* Visit http://localhost:5000/dataset/aircan-example/ and see the resource named XXX. It will have data in its datastore now! 😄 💨
+* Visit http://localhost:5000/dataset/aircan-example/ and see the resource named XXX. It will have data in its datastore now! 
 
 
 ### Example 2a: Remote file to DataStore

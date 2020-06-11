@@ -52,7 +52,8 @@ def delete_datastore_table(data_resource, config={}):
 
 def create_datastore_table(data_resource, config={}):
     data_dict = dict(
-        resource_id=data_resource['ckan_resource_id'],
+        resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
+        # resource_id=data_resource['ckan_resource_id'],
         fields=[
             {
                 'id': f['name'],
@@ -68,7 +69,9 @@ def create_datastore_table(data_resource, config={}):
             json=data_dict
         )
         if response.status_code == 200:
-            return {'success': True}
+            resource_json = response.json()
+            resource_id = resource_json.get("result", {}).get("resource_id")
+            return {'success': True, 'response_resource_id': resource_json}
             log.info('Table was created successfuly')
         else:
             return response.json()
@@ -199,14 +202,14 @@ def load_csv_to_postgres_via_copy(data_resource, config={}, connection=None):
                     log.warning(error_str)
                     return {
                         'success': False,
-                        'message': 'Error during deleting indexes: {}'.format(
+                        'message': 'Data Error during COPY command: {}'.format(
                             error_str
                         )
                     }
                 except Exception as e:
                     return {
                         'success': False,
-                        'message': 'Error during deleting index: {}'.format(e)
+                        'message': 'Generic Error during COPY: {}'.format(e)
                     }
                 finally:
                     cur.close()

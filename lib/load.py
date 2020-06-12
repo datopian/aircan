@@ -9,12 +9,6 @@ import requests
 
 from sqlalchemy import create_engine
 
-from airflow.models import Variable
-
-# def get_connection():
-#     engine = create_engine(Variable.get('CKAN_DATASTORE_WRITE_URL'))
-#     return engine.raw_connection()
-
 
 def load_csv(data_resource, config={}, connection=None):
     '''Loads a CSV into DataStore. Does not create the indexes.'''
@@ -31,10 +25,10 @@ def load_csv(data_resource, config={}, connection=None):
 
 
 def delete_datastore_table(data_resource, config={}):
-    header = {'Authorization': Variable.get('CKAN_SYSADMIN_API_KEY')}
+    header = {'Authorization': config['CKAN_SYSADMIN_API_KEY']}
     try:
         response = requests.post(
-            urljoin(Variable.get('CKAN_SITE_URL'), '/api/3/action/datastore_delete'),
+            urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_delete'),
             headers=header,
             json={
                 "resource_id": data_resource['ckan_resource_id'],
@@ -64,8 +58,8 @@ def create_datastore_table(data_resource, config={}):
     data_dict['force'] = True
     try:
         response = requests.post(
-            urljoin(Variable.get('CKAN_SITE_URL'), '/api/3/action/datastore_create'),
-            headers={'Authorization': Variable.get('CKAN_SYSADMIN_API_KEY')},
+            urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_create'),
+            headers={'Authorization': config['CKAN_SYSADMIN_API_KEY']},
             json=data_dict
         )
         if response.status_code == 200:

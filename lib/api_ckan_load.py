@@ -34,7 +34,7 @@ dag = DAG(
 
 data_resource = {
     'path': './r2.csv',
-    'ckan_resource_id': 'dd61b12d-49c7-4529-a633-7c8388dc773e',
+    'ckan_resource_id': '00dff48a-6537-4652-a430-20397a6f2ea0',
     'schema': {
         'fields': [
             {'name': 'FID', 'type': 'text'}
@@ -42,10 +42,17 @@ data_resource = {
     },
 }
 
+def get_config():
+    config = {}
+    config['CKAN_SYSADMIN_API_KEY'] = Variable.get('CKAN_SYSADMIN_API_KEY')
+    config['CKAN_SITE_URL'] = Variable.get('CKAN_SITE_URL')
+    return config
+
+
 
 def task_delete_datastore_table():
     logging.info('Invoking Delete Datastore')
-    return load.delete_datastore_table(data_resource)
+    return load.delete_datastore_table(data_resource, get_config())
 
 
 delete_datastore_table_task = PythonOperator(
@@ -58,7 +65,7 @@ delete_datastore_table_task = PythonOperator(
 
 def task_create_datastore_table():
     logging.info('Invoking Create Datastore')
-    return load.create_datastore_table(data_resource)
+    return load.create_datastore_table(data_resource, get_config())
 
 
 create_datastore_table_task = PythonOperator(
@@ -80,7 +87,7 @@ def get_connection():
 def task_load_csv_to_postgres_via_copy():
     logging.info('Loading CSV to postgres')
     return load.load_csv_to_postgres_via_copy(
-        data_resource, {}, get_connection()
+        data_resource, get_config(), get_connection()
     )
 
 
@@ -94,7 +101,7 @@ load_csv_to_postgres_via_copy_task = PythonOperator(
 def task_restore_indexes_and_set_datastore_active():
     logging.info('Restore Indexes')
     return load.restore_indexes_and_set_datastore_active(
-        data_resource, {}, get_connection()
+        data_resource, get_config(), get_connection()
     )
 
 

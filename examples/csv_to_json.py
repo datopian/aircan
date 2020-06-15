@@ -16,7 +16,7 @@ args = {
 }
 
 dag = DAG(
-    dag_id='cs_to_json',
+    dag_id='csv_to_json',
     default_args=args,
     schedule_interval=None,
     tags=['conversion']
@@ -26,7 +26,7 @@ dag = DAG(
 def convert(input, output, **kwargs):
     print('Starting file conversion')
     df = pd.read_csv(input)
-    df.to_json(output)
+    df.to_json(output, orient='records')
     print('End file conversion')
 
 
@@ -34,7 +34,7 @@ convert_task = PythonOperator(
     task_id="convert_to_json",
     provide_context=True,
     python_callable=convert,
-    op_kwargs={'input': "/path/to/my.csv",
+    op_kwargs={'input': "/path/to/my.csvv",
     'output': "/path/to/my.json"},
     dag=dag
 )

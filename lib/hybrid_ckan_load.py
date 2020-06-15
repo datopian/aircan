@@ -6,7 +6,7 @@ import pandas as pd
 import time
 
 # Local imports
-import load
+from lib.load import *
 
 # Third-party library imports
 from airflow import DAG

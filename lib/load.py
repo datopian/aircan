@@ -4,6 +4,7 @@ import hashlib
 import logging as log
 
 # Third-party library imports
+import json
 import psycopg2
 import requests
 
@@ -65,12 +66,71 @@ def create_datastore_table(data_resource, config={}):
         if response.status_code == 200:
             resource_json = response.json()
             resource_id = resource_json.get("result", {}).get("resource_id")
-            return {'success': True, 'response_resource_id': resource_json}
+            return {'success': True, 'response_resource': resource_json, 'response_resource_id': resource_id}
             log.info('Table was created successfuly')
         else:
             return response.json()
     except Exception as e:
         return {"success": False, "errors": [e]}
+
+
+# def send_resource_to_datastore(resource, headers, records,
+#                                is_it_the_last_chunk, api_key, ckan_url):
+#     """
+#     Stores records in CKAN datastore
+#     """
+#     request = {'resource_id': resource['id'],
+#                'fields': headers,
+#                'force': True,
+#                'records': records,
+#                'calculate_record_count': is_it_the_last_chunk}
+
+#     url = get_url('datastore_create', ckan_url)
+#     r = requests.post(url,
+#                       verify=SSL_VERIFY,
+#                       data=json.dumps(request, cls=DatastoreEncoder),
+#                       headers={'Content-Type': 'application/json',
+#                                'Authorization': api_key}
+#                       )
+#     check_response(r, url, 'CKAN DataStore')
+
+class DatastoreEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+        if isinstance(obj, decimal.Decimal):
+            return str(obj)
+
+        return json.JSONEncoder.default(self, obj)
+
+
+def load_csv_via_api(ckan_resource_id, records, config={}):
+    log.info("Loading CSV via API")
+    try:
+        request = {
+           'resource_id': ckan_resource_id,
+           'force': True,
+           'records': records}
+
+        url = urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_create')
+        response = requests.post(url,
+                      data=json.dumps(request, cls=DatastoreEncoder),
+                      headers={'Content-Type': 'application/json',
+                               'Authorization': config['CKAN_SYSADMIN_API_KEY']}
+                      )
+        if response.status_code == 200:
+            resource_json = response.json()
+            return {'success': True, 'response_resource': resource_json}
+            log.info('Table was created successfuly')
+        else:
+            return response.json()
+
+    except Exception as e:
+        return {"success": False, "errors": [e]}
+
+
+
+# =============== POTSGRES ACCESS ===============
 
 
 def delete_index(data_resource, config={}, connection=None):
@@ -107,7 +167,6 @@ def delete_index(data_resource, config={}, connection=None):
             cur.close()
     finally:
         connection.commit()
-
 
 def restore_indexes_and_set_datastore_active(data_resource,
                                              config={},
@@ -147,6 +206,8 @@ def restore_indexes_and_set_datastore_active(data_resource,
 def _generate_index_name(resource_id, field, config={}, connection=None):
     value = (resource_id + field).encode('utf-8')
     return hashlib.sha1(value).hexdigest()
+
+
 
 
 def load_csv_to_postgres_via_copy(data_resource, config={}, connection=None):

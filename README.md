@@ -63,8 +63,90 @@ Check the output
 
 * Locate the output on disk at `~/aircan-example-1.json`
 
+## Using Aircan DAGs
 
-### Example 2: Local file to CKAN DataStore
+
+### Example 2: Local file to CKAN DataStore using the Datastore API
+
+#### Preliminaries: Setup your CKAN instance
+
+We'll assume you have:
+
+* a local CKAN setup and running at https://localhost:5000
+* a dataset (for example, `my-dataset`) with a resource (for example, `my-resource` with the `my-res-id-123` as its `resource_id`).
+* We also need to set up two environment variables for Airflow. Access the Airflow Variable panel and set up `CKAN_SITE_URL` and your `CKAN_SYSADMIN_API_KEY`:
+
+![Variables configuration](docs/resources/images/aircan_variables.png)
+
+
+Now you can run the `ckan_api_load_single_step` by following these steps:
+
+1. Open your `airflow.cfg` file (usually located at `~/airflow/airflow.cfg` and point your DAG folder to aircan:
+```bash
+dags_folder = /your/path/to/aircan/dags
+```
+
+2. Save the file and verify that Airflow finds the DAG by running `airflow list_dags`. The output should list 
+```bash
+-------------------------------------------------------------------
+DAGS
+-------------------------------------------------------------------
+ckan_api_load_single_step
+...other DAGs...
+```
+
+3. Make sure you have these environment variables properly set up:
+```bash
+export LC_ALL=en_US.UTF-8
+export LANG=en_US.UTF-8
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+```
+
+4. Run the airflow webserver: `airflow webserver`
+
+5. Run the airflow scheduler: `airflow scheduler`. Make sure the environment variables from (3) are set up.
+
+6. Access the Airflow UI (`http://localhost:8080/`). You should see the DAG `ckan_api_load_single_step` listed.
+
+7. Activate the DAG by hitting on the **On** button on the interface.
+
+8. Now we can test the DAG. On your terminal, run:
+
+```bash
+airflow test \
+-tp "{ \"resource_id\": \"my-res-id-123\", \
+\"schema_fields_array\": \"[ 'field1', 'field2']\", \
+\"csv_input\": \"/path/to/my.csv\", \
+\"json_output\": \"/path/to/my.json\" }" \
+ckan_api_load_single_step full_load_via_api now
+```
+
+Make sure to replace the parameters accordingly. 
+
+* `resource_id` is the id of your resource on CKAN.
+* `schema_fields_array` is the header of your CSV file. Everything is being treated as plain text at this time.
+* `csv_input` is the path to the CSV file you want to upload.
+* The DAG will convert your CSV file to a JSON file and the upload it. `json_output` specifies the path where you want to dump your JSON file.
+
+
+9. Check your CKAN instance and verify that the data has been loaded.
+
+10. Trigger the DAG with
+
+```bash
+airflow trigger_dag -c  "{\"params\": { \"resource_id\": \"my-res-id-123\", \
+\"schema_fields_array\": [ \"field1\", \"field2\" ], \
+\"csv_input\": \"/path/to/my.csv\", \
+\"json_output\": \"/path/to/my.json\" } }" \
+ckan_api_load_single_step
+```
+
+Do not forget to properly replace the parameters with your data and properly escape the special characters.
+Alternatively, you can just run the DAG with the `airflow run` command.
+
+    
+
+### Example 3: Local file to CKAN DataStore using Postgres
 
 We'll load a local csv into CKAN DataStore instance.
 

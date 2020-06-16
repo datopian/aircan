@@ -10,6 +10,7 @@ import requests
 
 from sqlalchemy import create_engine
 
+# =============== API ACCESS ===============
 
 def load_csv(data_resource, config={}, connection=None):
     '''Loads a CSV into DataStore. Does not create the indexes.'''
@@ -25,14 +26,14 @@ def load_csv(data_resource, config={}, connection=None):
         data_resource, config=config, connection=connection)
 
 
-def delete_datastore_table(data_resource, config={}):
+def delete_datastore_table(data_resource_id, config={}):
     header = {'Authorization': config['CKAN_SYSADMIN_API_KEY']}
     try:
         response = requests.post(
             urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_delete'),
             headers=header,
             json={
-                "resource_id": data_resource['ckan_resource_id'],
+                "resource_id": data_resource_id,
                 'force': True
             }
         )
@@ -45,15 +46,15 @@ def delete_datastore_table(data_resource, config={}):
         return {"success": False, "errors": [e]}
 
 
-def create_datastore_table(data_resource, config={}):
+def create_datastore_table(data_resource_id, resource_fields, config={}):
     data_dict = dict(
-        resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
-        # resource_id=data_resource['ckan_resource_id'],
+        # resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
+        resource_id=data_resource_id,
         fields=[
             {
-                'id': f['name'],
+                'id': f,
                 'type': 'text'
-            } for f in data_resource['schema']['fields']],
+            } for f in resource_fields],
         )
     data_dict['records'] = None  # just create an empty table
     data_dict['force'] = True
@@ -64,70 +65,12 @@ def create_datastore_table(data_resource, config={}):
             json=data_dict
         )
         if response.status_code == 200:
-            resource_json = response.json()
-            resource_id = resource_json.get("result", {}).get("resource_id")
-            return {'success': True, 'response_resource': resource_json, 'response_resource_id': resource_id}
+            return {'success': True}
             log.info('Table was created successfuly')
         else:
-            return response.json()
+            return {"success": False, "response": response.json()}
     except Exception as e:
         return {"success": False, "errors": [e]}
-
-
-# def send_resource_to_datastore(resource, headers, records,
-#                                is_it_the_last_chunk, api_key, ckan_url):
-#     """
-#     Stores records in CKAN datastore
-#     """
-#     request = {'resource_id': resource['id'],
-#                'fields': headers,
-#                'force': True,
-#                'records': records,
-#                'calculate_record_count': is_it_the_last_chunk}
-
-#     url = get_url('datastore_create', ckan_url)
-#     r = requests.post(url,
-#                       verify=SSL_VERIFY,
-#                       data=json.dumps(request, cls=DatastoreEncoder),
-#                       headers={'Content-Type': 'application/json',
-#                                'Authorization': api_key}
-#                       )
-#     check_response(r, url, 'CKAN DataStore')
-
-class DatastoreEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, datetime.datetime):
-            return obj.isoformat()
-        if isinstance(obj, decimal.Decimal):
-            return str(obj)
-
-        return json.JSONEncoder.default(self, obj)
-
-
-def load_csv_via_api(ckan_resource_id, records, config={}):
-    log.info("Loading CSV via API")
-    try:
-        request = {
-           'resource_id': ckan_resource_id,
-           'force': True,
-           'records': records}
-
-        url = urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_create')
-        response = requests.post(url,
-                      data=json.dumps(request, cls=DatastoreEncoder),
-                      headers={'Content-Type': 'application/json',
-                               'Authorization': config['CKAN_SYSADMIN_API_KEY']}
-                      )
-        if response.status_code == 200:
-            resource_json = response.json()
-            return {'success': True, 'response_resource': resource_json}
-            log.info('Table was created successfuly')
-        else:
-            return response.json()
-
-    except Exception as e:
-        return {"success": False, "errors": [e]}
-
 
 
 # =============== POTSGRES ACCESS ===============

@@ -6,11 +6,11 @@ import time
 import json
 
 # Local imports
-from lib.load import delete_datastore_table, create_datastore_table, load_csv_via_api
+from lib.hybrid_load import delete_datastore_table, create_datastore_table
+from lib.api_load import load_resource_via_api
 
 from lib.file_conversion.csv_to_json import convert
 
-import examples.csv_to_json
 
 # Third-party library imports
 from airflow import DAG
@@ -86,65 +86,24 @@ create_datastore_table_task = PythonOperator(
 
 
 
-def task_load_csv_via_api(**kwargs):
+def task_load_resource_via_api(**kwargs):
     logging.info('Loading CSV via API')
     try:
         with open('/Users/hannelita/Development/freelance/Datopian/aircan/dags/r3.json') as f:
             records = json.load(f)
-            return load_csv_via_api(
+            return load_resource_via_api(
                 "0d1505b5-a8ef-4c3b-b19b-101b8e594d6e", records, get_config())
     except Exception as e:
         # raise AirflowException(str(response.status_code) + ":" + response.reason)
         return {"success": False, "errors": [e]}
 
 
-load_csv_to_postgres_via_copy_task = PythonOperator(
-    task_id='load_csv_via_api',
+load_resource_via_api_task = PythonOperator(
+    task_id='load_resource_via_api',
     provide_context=True,
-    python_callable=task_load_csv_via_api,
+    python_callable=task_load_resource_via_api,
     dag=dag,
 )
 
 
-delete_datastore_table_task >> create_datastore_table_task >> load_csv_to_postgres_via_copy_task
-
-
-single_dag_args = {
-    'owner': 'airflow',
-    'start_date': days_ago(2),
-    'params': {
-        "csv_input": "path/to/my.csv",
-        "json_output": "path/to/my.json"
-    }
-}
-
-single_dag = DAG(
-    dag_id='ckan_api_load_single_step',
-    default_args=single_dag_args,
-    schedule_interval=None,
-    tags=['api_load']
-)
-
-def full_load(csv_input, json_output, **kwargs):
-    logging.info('Invoking Create Datastore')
-    resource = create_datastore_table(data_resource, get_config())
-    logging.info('Converting resources to json')
-    convert(csv_input, json_output)
-    logging.info('Loading CSV via API')
-    try:
-        with open(json_output) as f:
-            records = json.load(f)
-            return load_csv_via_api(
-                resource['response_resource_id'], records, get_config())
-    except Exception as e:
-        return {"success": False, "errors": [e]}
-
-
-
-full_load_task = PythonOperator(
-    task_id='full_load_via_api',
-    provide_context=True,
-    python_callable=full_load,
-    op_kwargs={'csv_input': "{{ params.csv_input }}", 'json_output': "{{ params.json_output }}" },
-    dag=single_dag
-)
+delete_datastore_table_task >> create_datastore_table_task >> load_resource_via_api_task

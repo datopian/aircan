@@ -4,7 +4,7 @@ PACKAGE_DIRS := aircan
 TESTS_DIR := tests
 VERSION_FILE := VERSION
 
-PYTEST_EXTRA_ARGS := --flake8 --isort --doctest-modules -rsxX -l --tb=short --strict --cov-report term-missing:skip-covered --cov=tests --cov-fail-under 100
+PYTEST_EXTRA_ARGS := --flake8 --isort --doctest-modules --cov-report term-missing:skip-covered --cov=tests
 
 SHELL := bash
 PYTHON := python
@@ -14,6 +14,9 @@ PYTEST := pytest
 GIT := git
 
 VERSION := $(shell cat $(VERSION_FILE))
+
+# TODO: This will output `find: ‘aircan’: No such file or directory`
+# The dir structure needs to be updated to become a proper package
 SOURCE_FILES := $(shell find $(PACKAGE_DIRS) $(TESTS_DIR) -type f -name "*.py")
 
 default: help
@@ -23,7 +26,9 @@ requirements: dev-requirements.txt dev-requirements.in
 
 ## Run all tests
 test: dev-requirements.txt
-	$(PIP) install -r dev-requirements.txt -e .
+	# TODO: The dir structure is incorrect to install as a package
+	# $(PIP) install -r dev-requirements.txt -e .
+	$(PIP) install -r dev-requirements.txt
 	$(PYTEST) $(PYTEST_EXTRA_ARGS) $(TESTS_DIR)
 
 .PHONY: test requirements

@@ -1,13 +1,7 @@
-import os
-import time
 import pandas as pd
-
-
-from pprint import pprint
 
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
-from airflow.operators.python_operator import PythonVirtualenvOperator
 from airflow.utils.dates import days_ago
 
 args = {
@@ -34,7 +28,7 @@ convert_task = PythonOperator(
     task_id="convert_to_json",
     provide_context=True,
     python_callable=convert,
-    op_kwargs={'input': "/path/to/my.csvv",
-    'output': "/path/to/my.json"},
+    op_kwargs={'input': "../example.csv",
+    'output': "../aircan-example-1.json"},
     dag=dag
 )

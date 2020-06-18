@@ -5,4 +5,4 @@ def convert(input, output, **kwargs):
     print('Starting file conversion')
     df = pd.read_csv(input)
     df.to_json(output, orient='records')
-    print('End file conversion')
+    return {"success": True}

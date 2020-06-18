@@ -39,19 +39,13 @@ single_dag = DAG(
     tags=['api_load']
 )
 
-def get_config():
-    config = {}
-    config['CKAN_SYSADMIN_API_KEY'] = Variable.get('CKAN_SYSADMIN_API_KEY')
-    config['CKAN_SITE_URL'] = Variable.get('CKAN_SITE_URL')
-    return config
-
 
 def full_load(resource_id, schema_fields, csv_input, json_output, **kwargs):
     logging.info('Deleting Datastore if exists')
-    delete_datastore_table(resource_id, get_config())
+    delete_datastore_table(resource_id, Variable.get('CKAN_SYSADMIN_API_KEY'), Variable.get('CKAN_SITE_URL'))
     logging.info('Invoking Create Datastore')
     data_resource_fields = ast.literal_eval(schema_fields)
-    create_datastore_table(resource_id, data_resource_fields, get_config())
+    create_datastore_table(resource_id, data_resource_fields, Variable.get('CKAN_SYSADMIN_API_KEY'), Variable.get('CKAN_SITE_URL'))
     logging.info('Converting resources to json')
     convert(csv_input, json_output)
     logging.info('Loading CSV via API')
@@ -59,7 +53,7 @@ def full_load(resource_id, schema_fields, csv_input, json_output, **kwargs):
         with open(json_output) as f:
             records = json.load(f)
             return load_resource_via_api(
-                resource_id, records, get_config())
+                resource_id, records, Variable.get('CKAN_SYSADMIN_API_KEY'), Variable.get('CKAN_SITE_URL'))
     except Exception as e:
         return {"success": False, "errors": [e]}
 

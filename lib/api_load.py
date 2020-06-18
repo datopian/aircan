@@ -18,7 +18,7 @@ class DatastoreEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def load_resource_via_api(ckan_resource_id, records, config={}):
+def load_resource_via_api(ckan_resource_id, records, ckan_api_key, ckan_site_url):
     log.info("Loading resource via API")
     try:
         request = {
@@ -26,11 +26,11 @@ def load_resource_via_api(ckan_resource_id, records, config={}):
            'force': True,
            'records': records}
 
-        url = urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_create')
+        url = urljoin(ckan_site_url, '/api/3/action/datastore_create')
         response = requests.post(url,
                       data=json.dumps(request, cls=DatastoreEncoder),
                       headers={'Content-Type': 'application/json',
-                               'Authorization': config['CKAN_SYSADMIN_API_KEY']}
+                               'Authorization': ckan_api_key}
                       )
         if response.status_code == 200:
             resource_json = response.json()

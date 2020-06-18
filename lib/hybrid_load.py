@@ -26,11 +26,11 @@ def load_csv(data_resource, config={}, connection=None):
         data_resource, config=config, connection=connection)
 
 
-def delete_datastore_table(data_resource_id, config={}):
-    header = {'Authorization': config['CKAN_SYSADMIN_API_KEY']}
+def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
+    header = {'Authorization': ckan_api_key}
     try:
         response = requests.post(
-            urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_delete'),
+            urljoin(ckan_site_url, '/api/3/action/datastore_delete'),
             headers=header,
             json={
                 "resource_id": data_resource_id,
@@ -46,7 +46,7 @@ def delete_datastore_table(data_resource_id, config={}):
         return {"success": False, "errors": [e]}
 
 
-def create_datastore_table(data_resource_id, resource_fields, config={}):
+def create_datastore_table(data_resource_id, resource_fields, ckan_api_key, ckan_site_url):
     data_dict = dict(
         # resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
         resource_id=data_resource_id,
@@ -60,8 +60,8 @@ def create_datastore_table(data_resource_id, resource_fields, config={}):
     data_dict['force'] = True
     try:
         response = requests.post(
-            urljoin(config['CKAN_SITE_URL'], '/api/3/action/datastore_create'),
-            headers={'Authorization': config['CKAN_SYSADMIN_API_KEY']},
+            urljoin(ckan_site_url, '/api/3/action/datastore_create'),
+            headers={'Authorization': ckan_api_key},
             json=data_dict
         )
         if response.status_code == 200:

@@ -36,16 +36,9 @@ dag = DAG(
 )
 
 
-def get_config():
-    config = {}
-    config['CKAN_SYSADMIN_API_KEY'] = Variable.get('CKAN_SYSADMIN_API_KEY')
-    config['CKAN_SITE_URL'] = Variable.get('CKAN_SITE_URL')
-    return config
-
-
 def task_delete_datastore_table(resource_id, **kwargs):
     logging.info('Invoking Delete Datastore')
-    return delete_datastore_table(resource_id, get_config())
+    return delete_datastore_table(resource_id, Variable.get('CKAN_SYSADMIN_API_KEY'), Variable.get('CKAN_SITE_URL'))
 
 
 delete_datastore_table_task = PythonOperator(
@@ -60,7 +53,7 @@ delete_datastore_table_task = PythonOperator(
 def task_create_datastore_table(resource_id, schema_fields, **kwargs):
     logging.info('Invoking Create Datastore')
     data_resource_fields = ast.literal_eval(schema_fields)
-    create_datastore_table(resource_id, data_resource_fields, get_config())
+    create_datastore_table(resource_id, data_resource_fields, Variable.get('CKAN_SYSADMIN_API_KEY'), Variable.get('CKAN_SITE_URL'),)
 
 
 create_datastore_table_task = PythonOperator(
@@ -91,7 +84,7 @@ def task_load_resource_via_api(resource_id, json_output, **kwargs):
         with open(json_output) as f:
             records = json.load(f)
             return load_resource_via_api(
-                resource_id, records, get_config())
+                resource_id, records, Variable.get('CKAN_SYSADMIN_API_KEY'), Variable.get('CKAN_SITE_URL'))
     except Exception as e:
         # raise AirflowException(str(response.status_code) + ":" + response.reason)
         return {"success": False, "errors": [e]}

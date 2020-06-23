@@ -5,10 +5,10 @@ import ast
 from datetime import datetime
 
 # Local imports
-from lib.hybrid_load import delete_datastore_table, create_datastore_table
-from lib.api_load import load_resource_via_api
+from aircan.lib.hybrid_load import delete_datastore_table, create_datastore_table
+from aircan.lib.api_load import load_resource_via_api
 
-from lib.file_conversion.csv_to_json import convert
+from aircan.lib.file_conversion.csv_to_json import convert
 
 # Third-party library imports
 from airflow import DAG

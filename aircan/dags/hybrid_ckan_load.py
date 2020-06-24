@@ -6,7 +6,7 @@ import pandas as pd
 import time
 
 # Local imports
-from lib.hybrid_load import *
+from aircan.lib.hybrid_load import *
 
 # Third-party library imports
 from airflow import DAG

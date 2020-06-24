@@ -6,10 +6,10 @@ import ast
 from datetime import datetime
 
 # Local imports
-from aircan.lib.hybrid_load import delete_datastore_table, create_datastore_table
-from aircan.lib.api_load import load_resource_via_api
+from aircan.dependencies.hybrid_load import delete_datastore_table, create_datastore_table
+from aircan.dependencies.api_load import load_resource_via_api
 
-from aircan.lib.file_conversion.csv_to_json import convert
+from aircan.dependencies.file_conversion.csv_to_json import convert
 
 # Third-party library imports
 from airflow import DAG
@@ -22,8 +22,7 @@ from airflow.utils.dates import days_ago
 
 
 single_dag_args = {
-    'owner': 'airflow',
-    'start_date': datetime.now(),
+    'start_date': days_ago(0),
     'params': { 
         "resource_id": "res-id-123",
         "schema_fields_array": "['field1', 'field2']", 
@@ -35,8 +34,7 @@ single_dag_args = {
 single_dag = DAG(
     dag_id='ckan_api_load_single_step',
     default_args=single_dag_args,
-    schedule_interval=None,
-    tags=['api_load']
+    schedule_interval=None
 )
 
 

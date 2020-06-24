@@ -6,7 +6,7 @@ import pandas as pd
 import time
 
 # Local imports
-from aircan.lib.hybrid_load import *
+from aircan.dependencies.hybrid_load import *
 
 # Third-party library imports
 from airflow import DAG
@@ -21,15 +21,13 @@ from sqlalchemy import create_engine
 
 
 args = {
-    'owner': 'airflow',
-    'start_date': days_ago(2),
+    'start_date': days_ago(0)
 }
 
 dag = DAG(
     dag_id='ckan_load',
     default_args=args,
-    schedule_interval=None,
-    tags=['conversion'],
+    schedule_interval=None
 )
 
 data_resource = {

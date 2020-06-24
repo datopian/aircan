@@ -59,7 +59,7 @@ create_datastore_table_task = PythonOperator(
     task_id='create_datastore_via_api',
     provide_context=True,
     python_callable=task_create_datastore_table,
-    op_kwargs={'resource_id': "{{ params.resource_id }}", 'schema_fields': "{{ params.schema_fields_array }}" },
+    op_kwargs={'resource_id': '{{ params.resource_id }}', 'schema_fields': '{{ params.schema_fields_array }}' },
     dag=dag,
 )
 
@@ -73,7 +73,7 @@ convert_csv_to_json_task = PythonOperator(
     task_id='convert_csv_to_json',
     provide_context=True,
     python_callable=task_convert_csv_to_json,
-    op_kwargs={'csv_input': "{{ params.csv_input }}", 'json_output': "{{ params.json_output }}" },
+    op_kwargs={'csv_input': '{{ params.csv_input }}', 'json_output': '{{ params.json_output }}' },
     dag=dag,
 )
 
@@ -92,7 +92,7 @@ load_resource_via_api_task = PythonOperator(
     task_id='load_resource_via_api',
     provide_context=True,
     python_callable=task_load_resource_via_api,
-    op_kwargs={'resource_id': "{{ params.resource_id }}", 'json_output': "{{ params.json_output }}" },
+    op_kwargs={'resource_id': '{{ params.resource_id }}', 'json_output': '{{ params.json_output }}' },
     dag=dag,
 )
 

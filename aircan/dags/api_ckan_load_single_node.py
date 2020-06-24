@@ -22,13 +22,7 @@ from airflow.utils.dates import days_ago
 
 
 single_dag_args = {
-    'start_date': days_ago(0),
-    'params': { 
-        "resource_id": "res-id-123",
-        "schema_fields_array": "['field1', 'field2']", 
-        "csv_input": "path/to/my.csv", 
-        "json_output": "path/to/my.json"
-    }
+    'start_date': days_ago(0)
 }
 
 single_dag = DAG(
@@ -60,6 +54,6 @@ full_load_task = PythonOperator(
     task_id='full_load_via_api',
     provide_context=True,
     python_callable=full_load,
-    op_kwargs={'resource_id': "{{ params.resource_id }}", 'schema_fields': "{{ params.schema_fields_array }}", 'csv_input': "{{ params.csv_input }}", 'json_output': "{{ params.json_output }}" },
+    op_kwargs={'resource_id': '{{ params.resource_id }}', 'schema_fields': '{{ params.schema_fields_array }}', 'csv_input': '{{ params.csv_input }}', 'json_output': '{{ params.json_output }}' },
     dag=single_dag
 )

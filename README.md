@@ -1,4 +1,4 @@
-# 💨🥫 AirCan
+# AirCan
 
 Load data into [CKAN DataStore](https://docs.ckan.org/en/2.8/maintaining/datastore.html) using Airflow as the runner. This is a replacement for DataPusher and Xloader.
 
@@ -6,18 +6,18 @@ Clean separation of components so you can reuse what you want (e.g., you don't u
 
 <!-- toc -->
 
-- [💨🥫 AirCan](#-aircan)
+- [AirCan](#-aircan)
   - [Get Started](#get-started)
   - [Examples](#examples)
     - [Example 1: CSV to JSON](#example-1-csv-to-json)
   - [Using Aircan DAGs](#using-aircan-dags)
     - [Example 2: Local file to CKAN DataStore using the Datastore API](#example-2-local-file-to-ckan-datastore-using-the-datastore-api)
       - [Preliminaries: Setup your CKAN instance](#preliminaries-setup-your-ckan-instance)
-    - [Example 3: Local file to CKAN DataStore using Postgres](#example-3-local-file-to-ckan-datastore-using-postgres)
+    - [Ignore Example 3: Local file to CKAN DataStore using Postgres](#example-3-local-file-to-ckan-datastore-using-postgres)
       - [Preliminaries: Setup your CKAN instance](#preliminaries-setup-your-ckan-instance-1)
       - [Doing the load](#doing-the-load)
     - [Example 2a: Remote file to DataStore](#example-2a-remote-file-to-datastore)
-    - [Examples 3: Auto Load file uploaded to CKAN into CKAN DataStore](#examples-3-auto-load-file-uploaded-to-ckan-into-ckan-datastore)
+    - [Example 3: Auto Load file uploaded to CKAN into CKAN DataStore](#examples-3-auto-load-file-uploaded-to-ckan-into-ckan-datastore)
       - [Run it](#run-it)
   - [Tutorials](#tutorials)
     - [Using Google Cloud Composer](#using-google-cloud-composer)
@@ -26,7 +26,7 @@ Clean separation of components so you can reuse what you want (e.g., you don't u
 
 ## Get Started
 
-* Install **Python** >= 3.5 (and make a virtual environment).
+* Install **Python** >= 3.5 <= 3.7.x (and make a virtual environment).
 * Clone `aircan` so you have examples available:
 
   ```bash
@@ -55,9 +55,9 @@ This can be solved with `pip install typing_extensions`.
   airflow webserver -p 8080
   ```
 
-By default, the server will be accessible at `http://0.0.0.0:8080/` as shown in the output of the terminal where you ran the previous command.
+By default, the server will be accessible at `http://localhost:8080/` as shown in the output of the terminal where you ran the previous command.
 
-Now, jump into one of the examples.
+
 
 ## Examples
 
@@ -81,7 +81,7 @@ airflow scheduler
 
 Run this DAG:
 
-* Enable the dag in the [admin UI](http://0.0.0.0:8080/) with this toggle to make it run with the scheduler:
+* Enable the dag in the [admin UI](http://localhost:8080/) with this toggle to make it run with the scheduler:
   
   ![aircan_enable_example_dag_in_scheduler](docs/resources/images/aircan_enable_example_dag_in_scheduler.png)
 * "Trigger" the DAG with this button:
@@ -94,29 +94,37 @@ Run this DAG:
 
 * Locate the output on disk at `~/airflow/aircan-example-1.json`
 
-## Using Aircan DAGs
+
+
+## Using Aircan DAGs in a local Airflow instance
 
 ### Example 2: Local file to CKAN DataStore using the Datastore API
-
-#### Preliminaries: Setup your CKAN instance
 
 We'll assume you have:
 
 * a local CKAN setup and running at http://localhost:5000;
 * a dataset (for example, `my-dataset`) with a resource (for example, `my-resource` with the `my-res-id-123` as its `resource_id`);
-* We also need to set up two environment variables for Airflow. Access the [Airflow Variable panel](http://0.0.0.0:8080/admin/variable/) and set up `CKAN_SITE_URL` and your `CKAN_SYSADMIN_API_KEY`:
+* We also need to set up two environment variables for Airflow. Access the [Airflow Variable panel](http://localhost:8080/admin/variable/) and set up `CKAN_SITE_URL` and your `CKAN_SYSADMIN_API_KEY`:
 
 ![Variables configuration](docs/resources/images/aircan_variables.png)
 
-Now you can run the `api_ckan_load_single_node` by following these steps:
+#### Single-node DAG
+
+`api_ckan_load_single_node` is a single-node DAG which deletes,creates and loads a resource to a local or remote CKAN instance. You can run the `api_ckan_load_single_node` by following these steps:
 
 1. Open your `airflow.cfg` file (usually located at `~/airflow/airflow.cfg`) and point your DAG folder to AirCan:
 
 ```bash
-dags_folder = /your/path/to/aircan/dags
+dags_folder = /your/path/to/aircan
+
+...other configs
+
+dag_run_conf_overrides_params = True
 ```
 
-2. Save the file `dags/api_ckan_load_single_node.py` into `dags_folder` as set in the configuration file and verify that Airflow finds the DAG by running `airflow list_dags`. The output should list:
+Note: do not point `dags_folder` to `/your/path/to/aircan/aircan/dags`. It must be pointing to the outer `aircan` folder.
+
+2. Verify that Airflow finds the DAGs of Aircan by running `airflow list_dags`. The output should list:
 
 ```bash
 -------------------------------------------------------------------
@@ -134,7 +142,7 @@ export LANG=en_US.UTF-8
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 ```
 
-4. Run the Airflow webserver: `airflow webserver`
+4. Run the Airflow webserver (in case you have skipped the previous example): `airflow webserver`
 
 5. Run the Airflow scheduler: `airflow scheduler`. Make sure the environment variables from (3) are set up.
 
@@ -165,17 +173,24 @@ Make sure to replace the parameters accordingly.
 10. Trigger the DAG with the following:
 
 ```bash
-airflow trigger_dag -c  "{\"params\": { \"resource_id\": \"my-res-id-123\", \
-\"schema_fields_array\": [ \"field1\", \"field2\" ], \
-\"csv_input\": \"/path/to/my.csv\", \
-\"json_output\": \"/path/to/my.json\" } }" \
-ckan_api_load_single_step
+airflow trigger_dag ckan_api_load_single_step \
+ --conf='{ "resource_id": "my-res-id-123", "schema_fields_array": [ "field1", "field2" ], "csv_input": "/path/to.csv", "json_output": "/path/to.json" }'
 ```
 
 Do not forget to properly replace the parameters with your data and properly escape the special characters.
 Alternatively, you can just run the DAG with the `airflow run` command.
 
-### Example 3: Local file to CKAN DataStore using Postgres
+
+`api_ckan_load_single_node` also works for remote CKAN instances. Just set up your Airflow `CKAN_SITE_URL` variable accordingly.
+
+
+#### Multiple-node DAG
+
+`ckan_api_load_multiple_steps` does the same steps of `api_ckan_load_single_node`, but it uses multiple nodes (tasks). You can repeat the steps of the previous section and run `ckan_api_load_multiple_steps`.
+
+
+
+### [Ignore] Example 3: Local file to CKAN DataStore using Postgres
 
 We'll load a local csv into CKAN DataStore instance.
 
@@ -270,13 +285,45 @@ pip install -r requirements-example.txt
 python examples/ckan-upload-csv.py
 ```
 
-## Tutorials
+## 
 
 ### Using Google Cloud Composer
 
-* Sign up for an account.
-* Create a bucket for storing results and log data (automatic IIRC).
-* Upload this library code...
-* Set up the DAG...
-* Configure with this file online: https://raw.githubusercontent.com/datopian/aircan/examples/...
-* Run it...
+1. Sign up for an account at https://cloud.google.com/composer. Create or select an existing project at Google Cloud Platform. For this example, we use one called `aircan-test-project`.
+2. Create an environment at Google Cloud Composer, either by command line or by UI. Make sure you select **Python 3** when creating the project. Here, we create an environment named `aircan-airflow`.
+![Google Cloud Composer environment configuration](docs/resources/images/composer.png)
+
+
+
+After creating your environment, it should appear in your environment list:
+![Google Cloud Composer environment configuration](docs/resources/images/composer2.png)
+
+
+
+3. Override the configuration for `dag_run_conf_overrides_params`:
+![Google Cloud Composer environment configuration](docs/resources/images/composer_airflow_config.png)
+
+
+4. Access the designated DAGs folder (which will be a bucket). Upload the contents of `local/path/to/aircan/aircan` to the bucket:
+![Google Cloud Composer DAGs folder configuration](docs/resources/images/bucket1.png)
+
+The contents of the subfolder `aircan` must be:
+![Google Cloud Composer DAGs folder configuration](docs/resources/images/bucket2.png)
+
+5. Enter the subdirectory `dags` and delete the `__init__.py` file on this folder. It conflicts with Google Cloud Composer configurations.
+
+6. Similarly to what we did on Example 2, access your Airflow instance (created by Google Cloud Composer) and add `CKAN_SITE_URL` and `CKAN_SYSADMIN_API_KEY` as Variables. Now the DAGs must appear on the UI interface.
+
+7. Let's assume you have a resource on `https://demo.ckan.org/` with `my-res-id-123` as its resource_id. We also assume you have, in the root of your DAG bucket on Google Cloud platform, two files: One CSV file with the resource you want to upload, named `r3.csv`, with two columns, `field1` and `field2`. The other file you must have in the root of your your bucket is `r4.json`, an empty JSON file.
+![Google Cloud Composer DAGs folder configuration](docs/resources/images/setup1.png)
+
+Since our DAGs expect parameters, you'll have to trigger them via CLI:
+For example, to trigger `api_ckan_load_single_node`, run (from your terminal):
+```bash
+gcloud composer environments run aircan-airflow \
+     --location us-east1 \
+     trigger_dag -- ckan_api_load_single_step \
+      --conf='{ "resource_id": "my-res-id-123", "schema_fields_array": [ "field1", "field2" ], "csv_input": "/home/airflow/gcs/dags/r3.csv", "json_output": "/home/airflow/gcs/dags/r4.json" }'
+```
+
+Check the logs (tip: filter them by your DAG ID, for example, `ckan_api_load_single_step`). It should updload the data of your `.csv` file to `demo.ckan` successfully.

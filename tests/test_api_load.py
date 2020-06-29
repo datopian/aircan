@@ -5,8 +5,12 @@ from mock import Mock, patch
 
 from aircan.lib.api_load import load_resource_via_api
 
+RESOURCE_ID = '6f6b1c93-21ff-47ec-a0d6-e5be7c36d082'
+CKAN_URL = 'dummy_url'
+CKAN_API_KEY = 'dummy_key'
 
-class APITest(unittest.TestCase):
+
+class LoadResourceAPITest(unittest.TestCase):
 
     def test_load_resource_via_api(self):
         with patch.object(requests, 'post') as mock_load_resource_api:
@@ -15,14 +19,14 @@ class APITest(unittest.TestCase):
                     {'help': 'http://dummy_url/api/3/action/help_show?name=datastore_create',
                      'result': {
                          'method': 'insert',
-                         'resource_id': '6f6b1c93-21ff-47ec-a0d6-e5be7c36d082'},
+                         'resource_id': RESOURCE_ID},
                         'success': True},
                     'success': True
             }
             mock_load_resource_api.return_value.json.return_value = mocked_res
-
-            assert load_resource_via_api('6f6b1c93-21ff-47ec-a0d6-e5be7c36d082',
-                                         'test', 'dummy_key', 'dummy_url') == mocked_res
+            records = [{'FID': 192607, 'Mkt-RF': 2.96, 'SMB': -2.3, 'HML': -2.87, 'RF': 0.22}]
+            assert load_resource_via_api(RESOURCE_ID,
+                                         records, CKAN_API_KEY, CKAN_URL) == mocked_res
 
     def test_load_resource_via_api_failure(self):
         with patch.object(requests, 'post') as mock_load_resource_api:
@@ -37,5 +41,6 @@ class APITest(unittest.TestCase):
             mock_load_resource_api_res.status_code == 404
             mock_load_resource_api.return_value.json.return_value = mocked_res
 
+            records = [{'FID': 192607, 'Mkt-RF': 2.96, 'SMB': -2.3, 'HML': -2.87, 'RF': 0.22}]
             assert load_resource_via_api('notfound_resource_id',
-                                         'test', 'dummy_key', 'dummy_url') == mocked_res
+                                         records, CKAN_API_KEY, CKAN_URL) == mocked_res

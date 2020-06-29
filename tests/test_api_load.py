@@ -6,7 +6,7 @@ from mock import Mock, patch
 from aircan.lib.api_load import load_resource_via_api
 
 RESOURCE_ID = '6f6b1c93-21ff-47ec-a0d6-e5be7c36d082'
-CKAN_URL = 'dummy_url'
+CKAN_URL = 'http://ckan-dev:5000'
 CKAN_API_KEY = 'dummy_key'
 
 

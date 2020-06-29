@@ -1,6 +1,8 @@
 # Standard library imports
 from urllib.parse import urljoin
 import hashlib
+import datetime
+import decimal
 import logging as log
 
 # Third-party library imports

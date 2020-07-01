@@ -3,8 +3,12 @@ import unittest
 import psycopg2
 from mock import patch
 
-from aircan.lib.hybrid_load import (_generate_index_name, create_datastore_table, delete_datastore_table, delete_index,
-                                    load_csv_to_postgres_via_copy, restore_indexes_and_set_datastore_active)
+from aircan.dependencies.hybrid_load import (_generate_index_name,
+                                    create_datastore_table,
+                                    delete_datastore_table,
+                                    delete_index,
+                                    load_csv_to_postgres_via_copy,
+                                    restore_indexes_and_set_datastore_active)
 
 RESOURCE_ID = '6f6b1c93-21ff-47ec-a0d6-e5be7c36d082'
 CKAN_URL = 'http://ckan-dev:5000'

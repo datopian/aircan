@@ -40,6 +40,7 @@ future==0.18.2            # via apache-airflow
 graphviz==0.14            # via apache-airflow
 gunicorn==19.10.0         # via apache-airflow
 idna==2.9                 # via email-validator, requests
+importlib-metadata==1.7.0  # via argcomplete, jsonschema
 iso8601==0.1.12           # via apache-airflow
 itsdangerous==1.1.0       # via flask, flask-wtf
 jinja2==2.10.3            # via apache-airflow, flask, flask-babel
@@ -59,7 +60,7 @@ pandas==0.25.3            # via apache-airflow
 pendulum==1.4.4           # via apache-airflow
 prison==0.1.3             # via flask-appbuilder
 psutil==5.7.0             # via apache-airflow
-psycopg2==2.8.5           # via -r requirements.in
+psycopg2-binary==2.8.5    # via -r requirements.in
 pygments==2.6.1           # via apache-airflow
 pyjwt==1.7.1              # via flask-appbuilder, flask-jwt-extended
 pyrsistent==0.16.0        # via jsonschema
@@ -82,11 +83,13 @@ tenacity==4.12.0          # via apache-airflow
 termcolor==1.1.0          # via apache-airflow
 text-unidecode==1.2       # via apache-airflow
 thrift==0.13.0            # via apache-airflow
+typing-extensions==3.7.4.2  # via apache-airflow
 tzlocal==1.5.1            # via apache-airflow, pendulum
 unicodecsv==0.14.1        # via apache-airflow
 urllib3==1.25.9           # via requests
 werkzeug==0.16.1          # via apache-airflow, flask, flask-caching, flask-jwt-extended
 wtforms==2.3.1            # via flask-admin, flask-wtf
+zipp==3.1.0               # via importlib-metadata
 zope.deprecation==4.4.0   # via apache-airflow
 
 # The following packages are considered to be unsafe in a requirements file:

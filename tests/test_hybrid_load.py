@@ -1,14 +1,18 @@
+import os
 import unittest
 
 import psycopg2
 from mock import patch
 
-from aircan.dependencies.hybrid_load import (_generate_index_name, create_datastore_table, delete_datastore_table, delete_index,
-                                    load_csv_to_postgres_via_copy, restore_indexes_and_set_datastore_active)
+from aircan.dependencies.hybrid_load import (_generate_index_name, create_datastore_table, delete_datastore_table,
+                                             delete_index, load_csv_to_postgres_via_copy,
+                                             restore_indexes_and_set_datastore_active)
 
 RESOURCE_ID = '6f6b1c93-21ff-47ec-a0d6-e5be7c36d082'
 CKAN_URL = 'http://ckan-dev:5000'
 CKAN_API_KEY = 'dummy_key'
+
+THIS_PATH = os.path.dirname(os.path.realpath(__file__))
 
 
 class HybridApiTest(unittest.TestCase):
@@ -83,7 +87,6 @@ class HybridApiTest(unittest.TestCase):
     '''
         Test to validate the delete index functionality
     '''
-    @unittest.skip('Postgres not supportet yet')
     def test_delete_index(self):
         # payload
         data_resource = {
@@ -114,7 +117,6 @@ class HybridApiTest(unittest.TestCase):
     '''
         Test to validate the generate index namefunctionality
     '''
-    @unittest.skip('Postgres not supportet yet')
     def test__generate_index_name(self):
         ckan_resource_id = RESOURCE_ID
         fields = ['f1', 'f2', 'f3']
@@ -128,11 +130,11 @@ class HybridApiTest(unittest.TestCase):
     '''
         Test to validate the reindexing functionality
     '''
-    @unittest.skip('Postgres not supportet yet')
     def test_restore_indexes_and_set_datastore_active(self):
         # payload
+        path = THIS_PATH + '/r2.csv'
         data_resource = {
-            'path': './r2.csv',
+            'path': path,
             'ckan_resource_id': '6f6b1c93-21ff-47ec-a0d6-e5be7c36d082',
             'schema': {
                 'fields': [
@@ -171,11 +173,11 @@ class HybridApiTest(unittest.TestCase):
     '''
         Test to Load CSV to Postgres via copy_expert
     '''
-    @unittest.skip('Postgres not supportet yet')
     def test_load_csv_to_postgres_via_copy(self):
         # payload
+        path = THIS_PATH + '/r2.csv'
         data_resource = {
-            'path': './r2.csv',
+            'path': path,
             'ckan_resource_id': '6f6b1c93-21ff-47ec-a0d6-e5be7c36d082',
             'schema': {
                 'fields': [
@@ -192,7 +194,7 @@ class HybridApiTest(unittest.TestCase):
                 'success': True
             }
 
-            mock_connect.copy_expert.return_value = 'success'
+            mock_connect.cursor.return_value.copy_expert.return_value = 'success'
             assert load_csv_to_postgres_via_copy(data_resource,
                                                  {},
                                                  mock_connect) == mocked_res
@@ -203,7 +205,7 @@ class HybridApiTest(unittest.TestCase):
                 'success': False,
                 'message': 'Data Error during COPY command: {}'.format(error_str)
             }
-            mock_connect.copy_expert.return_value.side_effect = \
+            mock_connect.cursor.return_value.copy_expert.side_effect = \
                 psycopg2.DataError(error_str)
             assert load_csv_to_postgres_via_copy(data_resource,
                                                  {},
@@ -212,8 +214,8 @@ class HybridApiTest(unittest.TestCase):
                 'success': False,
                 'message': 'Generic Error during COPY: {}'.format(error_str)
             }
-            mock_connect.copy_expert.return_value.side_effect = \
-                Exception('Generic Error during COPY: {}'.format(error_str))
+            mock_connect.cursor.return_value.copy_expert.side_effect = \
+                Exception(format(error_str))
             assert load_csv_to_postgres_via_copy(data_resource,
                                                  {},
                                                  mock_connect) == mocked_res_exception

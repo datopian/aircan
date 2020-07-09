@@ -6,40 +6,41 @@ import tests.data_loader_config as config
 import tests.data_loader_load as load
 
 
+@unittest.skip("Need Environment to Run, these tests are mocked in other tests")
 class LoadTest(unittest.TestCase):
 
     def setUp(self):
         self.data_resource = {
-          'path': '100kb.csv',
-          'ckan_resource_id': '5d1af90f-cc57-4271-a990-1116dd1a400e',
+            'path': '100kb.csv',
+            'ckan_resource_id': '5d1af90f-cc57-4271-a990-1116dd1a400e',
             'schema': {
-                'fields': [
-              {
+               'fields': [
+                    {
                         'name': 'first_name',
                         'type': 'string'
-              },
-              {
+                    },
+                    {
                         'name': 'last_name',
                         'type': 'string'
-              },
-              {
+                    },
+                    {
                         'name': 'email',
                         'type': 'string'
-              },
-              {
+                    },
+                    {
                         'name': 'gender',
                         'type': 'string'
-              },
-              {
+                    },
+                    {
                         'name': 'ip_address',
                         'type': 'string'
-              },
-              {
+                    },
+                    {
                         'name': 'date',
                         'type': 'string'
-              }
-            ]
-          }
+                    }
+                ]
+            }
         }
         self.config = config.get_config()
 

@@ -2,8 +2,8 @@ import unittest
 
 from sqlalchemy import create_engine
 
-import data_loader_config as config
-import data_loader_load as load
+import tests.data_loader_config as config
+import tests.data_loader_load as load
 
 
 class LoadTest(unittest.TestCase):
@@ -80,12 +80,14 @@ class LoadTest(unittest.TestCase):
         res = load.create_datastore_table(self.data_resource, self.config)
         self.assertFalse(res['success'])
 
+    @unittest.skip('Postgres not supportet yet')
     def test___delete_index(self):
         cur = self.conn.cursor()
         cur.execute(self.create_cmd)
         res = load.delete_index(self.data_resource, self.config, self.conn)
         self.assertTrue(res['success'])
 
+    @unittest.skip('Postgres not supportet yet')
     def test___restore_indexes_and_set_datastore_active(self):
         cur = self.conn.cursor()
         cur.execute(self.create_cmd)
@@ -93,6 +95,7 @@ class LoadTest(unittest.TestCase):
             self.data_resource, self.config, self.conn)
         self.assertTrue(res['success'])
 
+    @unittest.skip('Postgres not supportet yet')
     def test___load_csv_to_postgres_via_copy(self):
         cur = self.conn.cursor()
         cur.execute(self.create_cmd)
@@ -100,6 +103,7 @@ class LoadTest(unittest.TestCase):
             self.data_resource, self.config, self.conn)
         self.assertTrue(res['success'])
 
+    @unittest.skip('Postgres not supportet yet')
     def test___load_csv_to_postgres_via_copy_data_is_in_db(self):
         cur = self.conn.cursor()
         cur.execute(self.create_cmd)

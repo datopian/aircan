@@ -3,7 +3,7 @@ import unittest
 import requests
 from mock import Mock, patch
 
-from aircan.lib.api_load import load_resource_via_api
+from aircan.dependencies.api_load import load_resource_via_api
 
 RESOURCE_ID = '6f6b1c93-21ff-47ec-a0d6-e5be7c36d082'
 CKAN_URL = 'http://ckan-dev:5000'

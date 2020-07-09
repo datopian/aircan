@@ -94,8 +94,7 @@ def delete_index(data_resource, config={}, connection=None):
                     cur.execute(sql_drop_index.format(index))
             return {'success': True}
         except psycopg2.DataError as e:
-            error_str = str(e).decode(
-                'ascii', 'replace').encode('ascii', 'replace')
+            error_str = str(e)
             log.warning(error_str)
             return {
                 'success': False,
@@ -140,9 +139,16 @@ def restore_indexes_and_set_datastore_active(data_resource,
 
     # Not sure what this doess
     sql_index_strings = map(lambda x: x.replace('%', '%%'), sql_index_strings)
-    for sql_index_string in sql_index_strings:
-        cur.execute(sql_index_string)
-
+    try:
+        for sql_index_string in sql_index_strings:
+            cur.execute(sql_index_string)
+    except psycopg2.errors.UndefinedTable as e:
+            error_str = str(e)
+            log.warning(error_str)
+            return {
+                'success': False,
+                'message': 'Error during reindexing: {}'.format(error_str)
+            }
     return {'success': True}
 
 
@@ -195,8 +201,7 @@ def load_csv_to_postgres_via_copy(data_resource, config={}, connection=None):
                     # E is a str but with foreign chars e.g.
                     # 'extra data: "paul,pa\xc3\xbcl"\n'
                     # But logging and exceptions need a normal (7 bit) str
-                    error_str = str(e).decode(
-                        'ascii', 'replace').encode('ascii', 'replace')
+                    error_str = str(e)
                     log.warning(error_str)
                     return {
                         'success': False,

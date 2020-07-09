@@ -327,3 +327,14 @@ gcloud composer environments run aircan-airflow \
 ```
 
 Check the logs (tip: filter them by your DAG ID, for example, `ckan_api_load_single_step`). It should updload the data of your `.csv` file to `demo.ckan` successfully.
+
+## Running Tests
+
+To run all the tests, do:
+
+> make test
+
+You can specify the path to single test by using:
+
+> make test TESTS_DIR=tests/test_file.py
+> e.g make test TESTS_DIR=tests/test_hybrid_load.py

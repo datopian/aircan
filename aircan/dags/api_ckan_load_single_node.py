@@ -18,7 +18,7 @@ from airflow.exceptions import AirflowException
 from airflow.models import Variable
 from airflow.operators.python_operator import PythonOperator
 from airflow.utils.dates import days_ago
-from aircan.logic import ValidationError, NotFound, RequestError, DatabaseError
+from aircan import ValidationError, NotFound, RequestError, DatabaseError
 
 
 single_dag_args = {

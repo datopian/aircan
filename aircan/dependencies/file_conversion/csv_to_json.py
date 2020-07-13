@@ -2,7 +2,7 @@ import pandas as pd
 import io
 import requests
 import logging as log
-from aircan.logic import NotFound, RequestError
+from aircan import NotFound, RequestError
 
 def convert(input, output, **kwargs):
     try:

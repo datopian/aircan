@@ -7,7 +7,7 @@ import logging as log
 import json
 import psycopg2
 import requests
-from aircan.logic import RequestError, DatabaseError
+from aircan import RequestError, DatabaseError
 from sqlalchemy import create_engine
 
 # =============== API ACCESS ===============

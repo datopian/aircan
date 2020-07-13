@@ -24,6 +24,7 @@ class HybridApiTest(unittest.TestCase):
         with patch('requests.post') as mock_create_datastore_table:
             # Validate Success
             mocked_res = {
+                'message': 'Table created Successfully.',
                 'success': True
             }
             # Set the status code as 200
@@ -31,27 +32,26 @@ class HybridApiTest(unittest.TestCase):
             mock_create_datastore_table.return_value.json.return_value = \
                 mocked_res
             resource_fields = ['f1', 'f2']
-            assert create_datastore_table(RESOURCE_ID,
-                                          resource_fields,
-                                          CKAN_API_KEY,
-                                          CKAN_URL) == mocked_res
+            self.assertEqual(create_datastore_table(RESOURCE_ID,
+                                                    resource_fields,
+                                                    CKAN_API_KEY,
+                                                    CKAN_URL), mocked_res)
             # Validate Failure
             mocked_res_error = {
                 "success": False,
-                "response": {
-                    "Error": "Failed to Create Datastore Table."
-                }
+                "message": "Failed to Create Datastore Table.",
             }
             # Set the status code as 400
             mock_create_datastore_table.return_value.status_code = 400
             mock_create_datastore_table.return_value.json.return_value = {
-                "Error": "Failed to Create Datastore Table."
+                "error": "Failed to Create Datastore Table."
             }
             resource_fields = ['f1', 'f2', 'f3']
-            assert create_datastore_table(RESOURCE_ID,
-                                          resource_fields,
-                                          CKAN_API_KEY,
-                                          CKAN_URL) == mocked_res_error
+            self.assertEqual(create_datastore_table(RESOURCE_ID,
+                                                    resource_fields,
+                                                    CKAN_API_KEY,
+                                                    CKAN_URL),
+                             str(mocked_res_error))
 
     '''
         Test to validate the delete datastore table
@@ -60,29 +60,33 @@ class HybridApiTest(unittest.TestCase):
         with patch('requests.post') as mock_delete_datastore_table:
             # Validate Success
             mocked_res = {
-                'success': True
+                'success': True,
+                'message': 'Table deleted successfully.'
             }
             # Set the status code as 200
             mock_delete_datastore_table.return_value.status_code = 200
             mock_delete_datastore_table.return_value.json.return_value = \
                 mocked_res
-            assert delete_datastore_table(RESOURCE_ID,
-                                          CKAN_API_KEY,
-                                          CKAN_URL) == mocked_res
+            self.assertEqual(delete_datastore_table(RESOURCE_ID,
+                                                    CKAN_API_KEY,
+                                                    CKAN_URL), mocked_res)
 
             # Validate Failure
+            mocked_res_error = {
+                "success": False,
+                "message": "Failed to Delete Datastore Table.",
+            }
             mocked_res = {
-                "response": {
-                    "Error": "Failed to Create Datastore Table."
-                }
+                "error": "Failed to Delete Datastore Table."
             }
             # Set the status code as 400
             mock_delete_datastore_table.return_value.status_code = 400
             mock_delete_datastore_table.return_value.json.return_value = \
                 mocked_res
-            assert delete_datastore_table(RESOURCE_ID,
-                                          CKAN_API_KEY,
-                                          CKAN_URL) == mocked_res
+            self.assertEqual(delete_datastore_table(RESOURCE_ID,
+                                                    CKAN_API_KEY,
+                                                    CKAN_URL),
+                             str(mocked_res_error))
 
     '''
         Test to validate the delete index functionality
@@ -106,13 +110,13 @@ class HybridApiTest(unittest.TestCase):
         error_str = 'invalid data \xc3\xbc'
         mocked_res_error = {
             'success': False,
-            'message': 'Error during deleting index: {}'.format(error_str)
+            'message': 'Error during deleting indexes: {}'.format(error_str)
         }
         with patch('psycopg2.connect') as mock_connect:
             mock_connect.cursor.return_value.execute.side_effect = \
                 psycopg2.DataError(error_str)
-            assert delete_index(data_resource, {}, mock_connect) == \
-                mocked_res_error
+            self.assertEqual(delete_index(data_resource, {}, mock_connect),
+                             str(mocked_res_error))
 
     '''
         Test to validate the generate index namefunctionality
@@ -149,6 +153,7 @@ class HybridApiTest(unittest.TestCase):
             # Validate Success
             mocked_res = {
                 'success': True,
+                'message': 'Reindex Successful.'
 
             }
 
@@ -165,10 +170,11 @@ class HybridApiTest(unittest.TestCase):
             }
             mock_connect.cursor.return_value.execute.side_effect = \
                 psycopg2.errors.UndefinedTable(error_str)
-            assert restore_indexes_and_set_datastore_active(data_resource,
+            self.assertEqual(restore_indexes_and_set_datastore_active(
+                                                            data_resource,
                                                             {},
-                                                            mock_connect) == \
-                mocked_res_error
+                                                            mock_connect),
+                             str(mocked_res_error))
 
     '''
         Test to Load CSV to Postgres via copy_expert

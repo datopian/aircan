@@ -200,19 +200,13 @@ def load_csv_to_postgres_via_copy(data_resource, config={}, connection=None):
                     # But logging and exceptions need a normal (7 bit) str
                     error_str = str(e)
                     log.warning(error_str)
-                    return {
-                        'success': False,
-                        'message': 'Data Error during COPY command: {}'.format(
-                            error_str
-                        )
-                    }
+                    raise DatabaseError(f"Data Error during COPY command: {error_str}")
                 except Exception as e:
-                    return {
-                        'success': False,
-                        'message': 'Generic Error during COPY: {}'.format(e)
-                    }
+                    raise DatabaseError(f"Generic Error during COPY: {e}")
                 finally:
                     cur.close()
+        except Exception as e:
+            return str(e)
         finally:
             cur.close()
     finally:

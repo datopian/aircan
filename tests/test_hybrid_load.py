@@ -213,15 +213,17 @@ class HybridApiTest(unittest.TestCase):
             }
             mock_connect.cursor.return_value.copy_expert.side_effect = \
                 psycopg2.DataError(error_str)
-            assert load_csv_to_postgres_via_copy(data_resource,
-                                                 {},
-                                                 mock_connect) == mocked_res_data_error
+            self.assertEqual(load_csv_to_postgres_via_copy(data_resource,
+                                                           {},
+                                                           mock_connect),
+                             str(mocked_res_data_error))
             mocked_res_exception = {
                 'success': False,
                 'message': 'Generic Error during COPY: {}'.format(error_str)
             }
             mock_connect.cursor.return_value.copy_expert.side_effect = \
                 Exception(format(error_str))
-            assert load_csv_to_postgres_via_copy(data_resource,
-                                                 {},
-                                                 mock_connect) == mocked_res_exception
+            self.assertEqual(load_csv_to_postgres_via_copy(data_resource,
+                                                           {},
+                                                           mock_connect),
+                             str(mocked_res_exception))

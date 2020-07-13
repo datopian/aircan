@@ -28,9 +28,9 @@ class ValidationError(ActionError):
     pass
 
 class RequestError(ActionError):
-    '''Exception raised by logic functions when a given is not found.'''
+    '''Exception raised by when there is issue in requests'''
     pass
 
 class DatabaseError(ActionError):
-    '''Exception raised by logic functions when a given is not found.'''
+    '''Exception raised by logic functions when a there is issue in Database Call'''
     pass

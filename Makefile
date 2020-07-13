@@ -29,6 +29,7 @@ test: dev-requirements.txt
 	# TODO: The dir structure is incorrect to install as a package
 	# $(PIP) install -r dev-requirements.txt -e .
 	$(PIP) install -r dev-requirements.txt
+	$(PIP) install -r requirements.txt
 	$(PYTEST) $(PYTEST_EXTRA_ARGS) $(TESTS_DIR)
 
 .PHONY: test requirements

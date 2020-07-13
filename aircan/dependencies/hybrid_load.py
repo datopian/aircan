@@ -7,7 +7,7 @@ import logging as log
 import json
 import psycopg2
 import requests
-
+from aircan import RequestError, DatabaseError
 from sqlalchemy import create_engine
 
 # =============== API ACCESS ===============
@@ -39,14 +39,15 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
         )
         if response.status_code == 200 or response.status_code == 404:
             log.info('Table was deleted successfuly')
-            return {"success": True}
+            return {'success': True, 'message': 'Table deleted successfully.'}
         else:
-            return response.json()
+            raise RequestError(response.json()['error'])
     except Exception as e:
-        return {"success": False, "errors": [e]}
+        return str(e)
 
 
 def create_datastore_table(data_resource_id, resource_fields, ckan_api_key, ckan_site_url):
+    log.info('Create Datastore Table method starts')
     data_dict = dict(
         # resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
         resource_id=data_resource_id,
@@ -65,12 +66,12 @@ def create_datastore_table(data_resource_id, resource_fields, ckan_api_key, ckan
             json=data_dict
         )
         if response.status_code == 200:
-            return {'success': True}
             log.info('Table was created successfuly')
+            return {'success': True, 'message': 'Table created Successfully.'}
         else:
-            return {"success": False, "response": response.json()}
+            raise RequestError(response.json()['error'])
     except Exception as e:
-        return {"success": False, "errors": [e]}
+        return str(e)
 
 
 # =============== POTSGRES ACCESS ===============
@@ -96,17 +97,13 @@ def delete_index(data_resource, config={}, connection=None):
         except psycopg2.DataError as e:
             error_str = str(e)
             log.warning(error_str)
-            return {
-                'success': False,
-                'message': 'Error during deleting index: {}'.format(error_str)
-            }
+            raise DatabaseError(f"Error during deleting indexes: {error_str}")
         except Exception as e:
-            return {
-                'success': False,
-                'message': 'Error during deleting indexes: {}'.format(e)
-            }
+            raise DatabaseError(f"Error during deleting indexes: {error_str}")
         finally:
             cur.close()
+    except Exception as e:
+        return str(e)
     finally:
         connection.commit()
 
@@ -140,16 +137,16 @@ def restore_indexes_and_set_datastore_active(data_resource,
     # Not sure what this doess
     sql_index_strings = map(lambda x: x.replace('%', '%%'), sql_index_strings)
     try:
-        for sql_index_string in sql_index_strings:
-            cur.execute(sql_index_string)
-    except psycopg2.errors.UndefinedTable as e:
-            error_str = str(e)
-            log.warning(error_str)
-            return {
-                'success': False,
-                'message': 'Error during reindexing: {}'.format(error_str)
-            }
-    return {'success': True}
+        try:
+            for sql_index_string in sql_index_strings:
+                cur.execute(sql_index_string)
+        except psycopg2.errors.UndefinedTable as e:
+                error_str = str(e)
+                log.warning(error_str)
+                raise DatabaseError(f"Error during reindexing: {error_str}")
+    except Exception as e:
+        return str(e)
+    return {'success': True, 'message': 'Reindex Successful.'}
 
 
 def _generate_index_name(resource_id, field, config={}, connection=None):
@@ -203,19 +200,13 @@ def load_csv_to_postgres_via_copy(data_resource, config={}, connection=None):
                     # But logging and exceptions need a normal (7 bit) str
                     error_str = str(e)
                     log.warning(error_str)
-                    return {
-                        'success': False,
-                        'message': 'Data Error during COPY command: {}'.format(
-                            error_str
-                        )
-                    }
+                    raise DatabaseError(f"Data Error during COPY command: {error_str}")
                 except Exception as e:
-                    return {
-                        'success': False,
-                        'message': 'Generic Error during COPY: {}'.format(e)
-                    }
+                    raise DatabaseError(f"Generic Error during COPY: {e}")
                 finally:
                     cur.close()
+        except Exception as e:
+            return str(e)
         finally:
             cur.close()
     finally:

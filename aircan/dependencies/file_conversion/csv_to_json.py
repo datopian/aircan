@@ -18,7 +18,7 @@ def convert_from_url(input_url, output, ckan_api_key, **kwargs):
         log.info('Starting file conversion from url: ' + ckan_api_key)
         header = {'Authorization': ckan_api_key}
         s = requests.get(input_url, headers=header).content
-        if s.status_code == 200
+        if s.status_code == 200:
             df = pd.read_csv(io.StringIO(s.decode('utf-8')))
             df.to_json(output, orient='records')
             return {"success": True}

@@ -20,8 +20,10 @@ class DatastoreEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def load_resource_via_api(ckan_resource_id, records, ckan_api_key, ckan_site_url):
-    log.info("Loading resource via API")
+def load_resource_via_api(ckan_resource_id, blob, ckan_api_key, ckan_site_url):
+    log.info("Loading resource via API lib")
+    records = blob.download_as_string()
+    records = records.decode('utf-8')
     try:
         request = {
            'resource_id': ckan_resource_id,
@@ -32,12 +34,12 @@ def load_resource_via_api(ckan_resource_id, records, ckan_api_key, ckan_site_url
         response = requests.post(url,
                       data=json.dumps(request, cls=DatastoreEncoder),
                       headers={'Content-Type': 'application/json',
-                               'Authorization': ckan_api_key}
-                      )
+                               'Authorization': ckan_api_key})
+        log.info(response)
         if response.status_code == 200:
             resource_json = response.json()
-            return {'success': True, 'response_resource': resource_json}
             log.info('Table was created successfuly')
+            return {'success': True, 'response_resource': resource_json}
         else:
             return response.json()
 

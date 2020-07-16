@@ -1,4 +1,6 @@
 apache-airflow
+google-cloud-storage
+google-auth
 psycopg2-binary
 python-dotenv
 requests

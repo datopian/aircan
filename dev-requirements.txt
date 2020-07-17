@@ -11,6 +11,7 @@ flake8==3.8.3             # via pytest-flake8
 importlib-metadata==1.7.0  # via flake8, pluggy, pytest
 isort==4.3.21             # via pytest-isort
 mccabe==0.6.1             # via flake8
+mock==4.0.2               # via -r dev-requirements.in
 more-itertools==8.3.0     # via pytest
 packaging==20.4           # via pytest
 pip-tools==5.2.1          # via -r dev-requirements.in

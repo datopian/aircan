@@ -117,7 +117,7 @@ load_resource_via_api_task = PythonOperator(
     task_id='load_resource_via_api',
     provide_context=True,
     python_callable=task_load_resource_via_api,
-    op_kwargs={'resource_id': "{{ params.resource_id }}", 'csv_input': "{{ params.path }}", 'json_output_bucket': "{{ params.output_bucket }}", 'ckan_api_key': "{{params.ckan_api_key}}", 'ckan_site_url': "{{params.ckan_site_url}}" },
+    op_kwargs={'resource_id': "{{ params.ckan_resource_id }}", 'csv_input': "{{ params.path }}", 'json_output_bucket': "{{ params.output_bucket }}", 'ckan_api_key': "{{params.ckan_api_key}}", 'ckan_site_url': "{{params.ckan_site_url}}" },
     dag=dag,
 )
 

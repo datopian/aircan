@@ -3,6 +3,7 @@ import io
 import requests
 import logging as log
 from aircan import NotFound, RequestError
+from aircan.dependencies.google_cloud.file_handler import update_file_content_from_string
 
 def convert(input, output, **kwargs):
     try:
@@ -15,12 +16,14 @@ def convert(input, output, **kwargs):
 
 def convert_from_url(input_url, output, ckan_api_key, **kwargs):
     try:
-        log.info('Starting file conversion from url: ' + ckan_api_key)
-        header = {'Authorization': ckan_api_key}
-        s = requests.get(input_url, headers=header).content
+        log.info('Starting file conversion from url: ' + input_url)
+        s = requests.get(input_url)
         if s.status_code == 200:
+            log.info('Reading remote CSV')
+            s = s.content
             df = pd.read_csv(io.StringIO(s.decode('utf-8')))
-            df.to_json(output, orient='records')
+            data = df.to_json(orient='records')
+            update_file_content_from_string(output, data)
             return {"success": True}
         else:
             raise RequestError(response.json()['error'])

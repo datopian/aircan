@@ -22,13 +22,14 @@ class DatastoreEncoder(json.JSONEncoder):
 
 def load_resource_via_api(ckan_resource_id, blob, ckan_api_key, ckan_site_url):
     log.info("Loading resource via API lib")
+    log.info(blob)
     records = blob.download_as_string()
     records = records.decode('utf-8')
     try:
         request = {
            'resource_id': ckan_resource_id,
            'force': True,
-           'records': records}
+           'records': json.loads(records)}
 
         url = urljoin(ckan_site_url, '/api/3/action/datastore_create')
         response = requests.post(url,

@@ -7,7 +7,7 @@ def bq_import_csv(table_id, gcs_path, table_schema):
     
     client = bigquery.Client()
 
-    table = bigquery.Table(table_id)
+    #table = bigquery.Table(table_id)
 
     job_config = bigquery.LoadJobConfig()
 
@@ -18,7 +18,7 @@ def bq_import_csv(table_id, gcs_path, table_schema):
     job_config.source_format = bigquery.SourceFormat.CSV
 
     load_job = client.load_table_from_uri(
-        gcs_path, table, job_config=job_config
+        gcs_path, table_id, job_config=job_config
     )
 
     load_job.result()  # Waits for table load to complete.

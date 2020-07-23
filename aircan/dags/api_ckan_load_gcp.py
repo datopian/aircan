@@ -23,13 +23,19 @@ from airflow.utils.dates import days_ago
 
 args = {
     'start_date': days_ago(0),
-    'params': { 
-        "path": "path/to/my.csv", 
-        "format": "CSV",
-        "ckan_resource_id": "res-id-123",
-        "schema": "['field1', 'field2']", 
-        "ckan_api_key": "API_KEY",
-        "ckan_site_url": "URL",
+    'params': {
+        "resource": {
+            "path": "path/to/my.csv", 
+            "format": "CSV",
+            "ckan_resource_id": "res-id-123",
+            "schema": {
+                "fields": "['field1', 'field2']"
+            } 
+        },
+        "ckan_config": {
+            "api_key": "API_KEY",
+            "site_url": "URL",
+        },
         "output_bucket": str(date.today())
     }
 }
@@ -40,8 +46,11 @@ dag = DAG(
     schedule_interval=None
 )
 
-def task_delete_datastore_table(resource_id, ckan_api_key, ckan_site_url, **kwargs):
+def task_delete_datastore_table(**context):
     logging.info('Invoking Delete Datastore')
+    resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     return delete_datastore_table(resource_id, ckan_api_key, ckan_site_url)
 
 
@@ -49,25 +58,31 @@ delete_datastore_table_task = PythonOperator(
     task_id='delete_datastore_via_api',
     provide_context=True,
     python_callable=task_delete_datastore_table,
-    op_kwargs={'resource_id': "{{ params.ckan_resource_id }}", 'ckan_api_key': "{{params.ckan_api_key}}", 'ckan_site_url': "{{params.ckan_site_url}}"},
     dag=dag,
 )
 
-def task_create_datastore_table(resource_id, schema_fields, ckan_api_key, ckan_site_url, **kwargs):
+def task_create_datastore_table(**context):
     logging.info('Invoking Create Datastore')
-    data_resource_fields = ast.literal_eval(schema_fields)
-    create_datastore_table(resource_id, data_resource_fields, ckan_api_key, ckan_site_url)
+    resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
+    logging.info("SCHEMA")
+    schema = context['params'].get('resource', {}).get('schema')
+    schema = ast.literal_eval(schema)
+    schema_fields = schema.get('fields')
+    create_datastore_table(resource_id, schema_fields, ckan_api_key, ckan_site_url)
 
 
 create_datastore_table_task = PythonOperator(
     task_id='create_datastore_via_api',
     provide_context=True,
     python_callable=task_create_datastore_table,
-    op_kwargs={'resource_id': "{{ params.ckan_resource_id }}", 'schema_fields': "{{ params.schema }}", 'ckan_api_key': "{{params.ckan_api_key}}", 'ckan_site_url': "{{params.ckan_site_url}}"},
     dag=dag,
 )
 
-def task_create_bucket_and_remote_file(csv_input, json_output_bucket, **kwargs):
+def task_create_bucket_and_remote_file(**context):
+    csv_input = context['params'].get('resource', {}).get('path')
+    json_output_bucket = context['params'].get('output_bucket')
     input_file_name = csv_input.split("/")[-1]
     input_file_name = input_file_name.split(".")[0] 
     json_output = input_file_name + '.json'
@@ -77,13 +92,15 @@ create_bucket_and_remote_file_task = PythonOperator(
     task_id='create_bucket_and_remote_file',
     provide_context=True,
     python_callable=task_create_bucket_and_remote_file,
-    op_kwargs={'csv_input': "{{ params.path }}", 'json_output_bucket': "{{ params.output_bucket }}"},
     dag=dag,
 )
 
 
-def task_convert_csv_to_json(csv_input, json_output_bucket, ckan_api_key, **kwargs):
+def task_convert_csv_to_json(**context):
     logging.info("Converting CSV to JSON")
+    csv_input = context['params'].get('resource', {}).get('path')
+    json_output_bucket = context['params'].get('output_bucket')
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     input_file_name = csv_input.split("/")[-1]
     input_file_name = input_file_name.split(".")[0] 
     json_output = input_file_name + '.json'
@@ -96,12 +113,16 @@ convert_csv_to_json_task = PythonOperator(
     task_id='convert_csv_to_json',
     provide_context=True,
     python_callable=task_convert_csv_to_json,
-    op_kwargs={'csv_input': "{{ params.path }}", 'json_output_bucket': "{{ params.output_bucket }}", 'ckan_api_key': "{{params.ckan_api_key}}"},
     dag=dag,
 )
 
-def task_load_resource_via_api(resource_id, csv_input, json_output_bucket, ckan_api_key, ckan_site_url, **kwargs):
+def task_load_resource_via_api(**context):
     logging.info('Loading resource via API')
+    resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
+    csv_input = context['params'].get('resource', {}).get('path')
+    json_output_bucket = context['params'].get('output_bucket')
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     try:
         input_file_name = csv_input.split("/")[-1]
         input_file_name = input_file_name.split(".")[0] 
@@ -117,7 +138,6 @@ load_resource_via_api_task = PythonOperator(
     task_id='load_resource_via_api',
     provide_context=True,
     python_callable=task_load_resource_via_api,
-    op_kwargs={'resource_id': "{{ params.ckan_resource_id }}", 'csv_input': "{{ params.path }}", 'json_output_bucket': "{{ params.output_bucket }}", 'ckan_api_key': "{{params.ckan_api_key}}", 'ckan_site_url': "{{params.ckan_site_url}}" },
     dag=dag,
 )
 

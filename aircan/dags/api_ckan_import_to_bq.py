@@ -19,18 +19,24 @@ from airflow.utils.dates import days_ago
 
 args = {
     'start_date': days_ago(0),
-    'params': { 
-        "path": "path/to/my.csv", 
-        "format": "CSV",
-        "ckan_resource_id": "res-id-123",
-        "schema": "['field1', 'field2']", 
-        "ckan_api_key": "API_KEY",
-        "ckan_site_url": "URL",
-        "output_bucket": str(date.today()),
-        "bq_project_id": "bq-project",
-        "bq_dataset_id": "bq-dataset",
-        "bq_table_name": "bq-table"
-
+    'params': {
+        "resource": {
+            "path": "path/to/my.csv", 
+            "format": "CSV",
+            "ckan_resource_id": "res-id-123",
+            "schema": {
+                "fields": "['field1', 'field2']"
+            } 
+        },
+        "ckan_config": {
+            "api_key": "API_KEY",
+            "site_url": "URL",
+        },
+        "big_query": {
+            "bq_project_id": "bigquery_project_id",
+            "bq_dataset_id": "bigquery_dataset_id"
+        },
+        "output_bucket": str(date.today())
     }
 }
 
@@ -40,8 +46,16 @@ dag = DAG(
     schedule_interval=None
 )
 
-def task_import_resource_to_bq(gc_file_url, table_schema, bq_project_id, bq_dataset_id, bq_table_name, **kwargs):
-    logging.info('Importing resource to bigquery')
+def task_import_resource_to_bq(**context):
+    logging.info('Invoking import resource to bigquery')
+    gc_file_url = context['params'].get('resource', {}).get('path')
+    bq_project_id = context['params'].get('big_query', {}).get('bq_project_id')
+    bq_dataset_id = context['params'].get('big_query', {}).get('bq_dataset_id')
+    bq_table_name = gc_file_url.split("/")[-1].partition('.')[0].replace('-', '_')
+
+    logging.info("SCHEMA")
+    table_schema = context['params'].get('resource', {}).get('schema')
+
     # sample bq_table_id: "bigquerytest-271707.nhs_test.dag_test"
     bq_table_id = '%s.%s.%s' % (bq_project_id, bq_dataset_id, bq_table_name)          
     logging.info('Importing %s to BQ %s' % (gc_file_url, bq_table_id))
@@ -53,6 +67,5 @@ import_resource_to_bq_task = PythonOperator(
     task_id='import_resource_to_bq',
     provide_context=True,
     python_callable=task_import_resource_to_bq,
-    op_kwargs={'gc_file_url': "{{ params.path }}", 'table_schema': "{{ params.schema }}", 'bq_project_id': "{{ params.bq_project_id }}", 'bq_dataset_id': "{{ params.bq_dataset_id }}", 'bq_table_name': "{{ params.bq_table_name }}"},
     dag=dag,
 )

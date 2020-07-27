@@ -338,3 +338,7 @@ You can specify the path to single test by using:
 
 > make test TESTS_DIR=tests/test_file.py
 > e.g make test TESTS_DIR=tests/test_hybrid_load.py
+
+While running `test_ckan_import_to_bq` you have to provide appropriate cloud credentials for operation with BigQuery.
+You can get your credentials from here: https://cloud.google.com/docs/authentication/getting-started 
+Please save your credentials as `google.json` and include in `/tests` directory.

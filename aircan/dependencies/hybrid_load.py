@@ -46,16 +46,16 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
         return str(e)
 
 
-def create_datastore_table(data_resource_id, resource_fields, ckan_api_key, ckan_site_url):
+def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan_site_url):
     log.info('Create Datastore Table method starts')
     data_dict = dict(
         # resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
         resource_id=data_resource_id,
         fields=[
             {
-                'id': f,
-                'type': 'text'
-            } for f in resource_fields],
+                'id': f['name'],
+                'type': f['type']
+            } for f in resource_schema],
         )
     data_dict['records'] = None  # just create an empty table
     data_dict['force'] = True

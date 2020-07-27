@@ -1,8 +1,20 @@
 # AirCan
 
-Load data into [CKAN DataStore](https://docs.ckan.org/en/2.8/maintaining/datastore.html) using Airflow as the runner. This is a replacement for DataPusher and Xloader.
+AirCan is an open source cloud-based system for creating, manipulating and running data workflows (aka data pipelines). It is focused on integration with CKAN and the DataHub but can also be used standalone.
 
-Clean separation of components so you can reuse what you want (e.g., you don't use Airflow but your own runner).
+It can be used to create any kind of data pipeline and out of the box it provides functionality such as:
+
+* (Metadata) harvesting
+* Data loading (e.g. to [CKAN DataStore][])
+* Data validation (via goodtables)
+* Data conversion (e.g. CSV => JSON)
+* And more ...
+
+In design, it is a lightweight set of patterns and services built on top of widely adopted open source products such as AirFlow and Frictionless.
+
+For CKAN, this an evolution of DataPusher and Xloader (some core code is similar but it is much improved with the runner now being AirFlow).
+
+[CKAN DataStore]: https://docs.ckan.org/en/2.8/maintaining/datastore.html
 
 <!-- toc -->
 
@@ -23,6 +35,18 @@ Clean separation of components so you can reuse what you want (e.g., you don't u
     - [Using Google Cloud Composer](#using-google-cloud-composer)
 
 <!-- tocstop -->
+
+
+## Features
+
+* Runner via AirFlow
+* Workflow pattern and tooling: pattern/library for creating workflows out of tasks
+* Library of tasks
+* Workflow templates
+* API for status, errors and logging
+* Code samples for integration and deployment on cloud providers e.g. Google Cloud Composer
+* Integrations: CKAN, DataHub
+* Documentation
 
 ## Get Started
 

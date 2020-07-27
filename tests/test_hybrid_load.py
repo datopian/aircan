@@ -31,7 +31,16 @@ class HybridApiTest(unittest.TestCase):
             mock_create_datastore_table.return_value.status_code = 200
             mock_create_datastore_table.return_value.json.return_value = \
                 mocked_res
-            resource_fields = ['f1', 'f2']
+            resource_fields = [{
+                "name": "f1",
+                "type": "text",
+                "format": "default"
+              },
+              {
+                "name": "f2",
+                "type": "text",
+                "format": "default"
+              }]
             self.assertEqual(create_datastore_table(RESOURCE_ID,
                                                     resource_fields,
                                                     CKAN_API_KEY,
@@ -46,7 +55,21 @@ class HybridApiTest(unittest.TestCase):
             mock_create_datastore_table.return_value.json.return_value = {
                 "error": "Failed to Create Datastore Table."
             }
-            resource_fields = ['f1', 'f2', 'f3']
+            resource_fields = [{
+                "name": "f1",
+                "type": "text",
+                "format": "default"
+              },
+              {
+                "name": "f2",
+                "type": "text",
+                "format": "default"
+              },
+              {
+                "name": "f3",
+                "type": "text",
+                "format": "default"
+              }]
             self.assertEqual(create_datastore_table(RESOURCE_ID,
                                                     resource_fields,
                                                     CKAN_API_KEY,

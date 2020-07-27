@@ -29,7 +29,13 @@ args = {
             "format": "CSV",
             "ckan_resource_id": "res-id-123",
             "schema": {
-                "fields": "['field1', 'field2']"
+                "fields": [
+                    {
+                        "name": "Field_Name",
+                        "type": "number",
+                        "format": "default"
+                    }
+                ]
             } 
         },
         "ckan_config": {
@@ -66,12 +72,11 @@ def task_create_datastore_table(**context):
     resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
-    logging.info("SCHEMA")
-    schema = context['params'].get('resource', {}).get('schema')
-    schema = json.loads(schema)
-    schema = ast.literal_eval(schema)
-    schema_fields = schema.get('fields')
-    create_datastore_table(resource_id, schema_fields, ckan_api_key, ckan_site_url)
+    raw_schema = context['params'].get('resource', {}).get('schema')
+    raw_schema = json.loads(raw_schema)
+    eval_schema = ast.literal_eval(raw_schema)
+    schema = eval_schema.get('fields')
+    create_datastore_table(resource_id, schema, ckan_api_key, ckan_site_url)
 
 
 create_datastore_table_task = PythonOperator(

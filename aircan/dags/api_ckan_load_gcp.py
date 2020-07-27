@@ -68,6 +68,7 @@ def task_create_datastore_table(**context):
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     logging.info("SCHEMA")
     schema = context['params'].get('resource', {}).get('schema')
+    schema = json.loads(schema)
     schema = ast.literal_eval(schema)
     schema_fields = schema.get('fields')
     create_datastore_table(resource_id, schema_fields, ckan_api_key, ckan_site_url)

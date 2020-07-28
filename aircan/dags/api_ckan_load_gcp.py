@@ -73,7 +73,6 @@ def task_create_datastore_table(**context):
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     raw_schema = context['params'].get('resource', {}).get('schema')
-    raw_schema = json.loads(raw_schema)
     eval_schema = ast.literal_eval(raw_schema)
     schema = eval_schema.get('fields')
     create_datastore_table(resource_id, schema, ckan_api_key, ckan_site_url)
@@ -134,8 +133,10 @@ def task_load_resource_via_api(**context):
         input_file_name = input_file_name.split(".")[0] 
         json_output = input_file_name + '.json'
         blob = get_blob(json_output_bucket, json_output)
+        records = blob.download_as_string()
+        records = records.decode('utf-8')
         return load_resource_via_api(
-            resource_id, blob, ckan_api_key, ckan_site_url)
+            resource_id, records, ckan_api_key, ckan_site_url)
     except Exception as e:
         # raise AirflowException(str(response.status_code) + ":" + response.reason)
         return {"success": False, "errors": [e]}

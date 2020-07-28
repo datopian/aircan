@@ -83,7 +83,7 @@ By default, the server will be accessible at `http://localhost:8080/` as shown i
 
 
 
-## Examples
+## Examples - Understanding the concept of a DAG
 
 ### Example 1: CSV to JSON
 
@@ -126,7 +126,7 @@ Run this DAG:
 
 We'll assume you have:
 
-* a local CKAN setup and running at http://localhost:5000;
+* a local CKAN setup and running at http://localhost:5000 (or any other known endpoint of your choice);
 * a dataset (for example, `my-dataset`) with a resource (for example, `my-resource` with the `my-res-id-123` as its `resource_id`);
 * We also need to set up two environment variables for Airflow. Access the [Airflow Variable panel](http://localhost:8080/admin/variable/) and set up `CKAN_SITE_URL` and your `CKAN_SYSADMIN_API_KEY`:
 
@@ -309,7 +309,7 @@ pip install -r requirements-example.txt
 python examples/ckan-upload-csv.py
 ```
 
-## 
+## Integrations
 
 ### Using Google Cloud Composer
 
@@ -351,6 +351,11 @@ gcloud composer environments run aircan-airflow \
 ```
 
 Check the logs (tip: filter them by your DAG ID, for example, `ckan_api_load_single_step`). It should updload the data of your `.csv` file to `demo.ckan` successfully.
+
+### Integration with CKAN
+
+Please check https://github.com/datopian/ckanext-aircan for more information.
+
 
 ## Running Tests
 

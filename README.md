@@ -83,7 +83,7 @@ By default, the server will be accessible at `http://localhost:8080/` as shown i
 
 
 
-## Examples - Understanding tjhe concept of a DAG
+## Examples - Understanding the concept of a DAG
 
 ### Example 1: CSV to JSON
 

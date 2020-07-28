@@ -8,7 +8,7 @@ PYTEST_EXTRA_ARGS := --flake8 --isort --doctest-modules --cov-report term-missin
 
 SHELL := bash
 PYTHON := python
-PIP := pip3
+PIP := pip
 PIP_COMPILE := pip-compile
 PYTEST := pytest
 GIT := git

@@ -1,28 +1,32 @@
 # AirCan
 
-Load data into [CKAN DataStore](https://docs.ckan.org/en/2.8/maintaining/datastore.html) using Airflow as the runner. This is a replacement for DataPusher and Xloader.
+AirCan is an open source cloud-based system for creating, manipulating and running data workflows (aka data pipelines). It is focused on integration with CKAN and the DataHub but can also be used standalone.
 
-Clean separation of components so you can reuse what you want (e.g., you don't use Airflow but your own runner).
+It can be used to create any kind of data pipeline and out of the box it provides functionality such as:
 
-<!-- toc -->
+* (Metadata) harvesting
+* Data loading (e.g. to [CKAN DataStore][])
+* Data validation (via goodtables)
+* Data conversion (e.g. CSV => JSON)
+* And more ...
 
-- [AirCan](#-aircan)
-  - [Get Started](#get-started)
-  - [Examples](#examples)
-    - [Example 1: CSV to JSON](#example-1-csv-to-json)
-  - [Using Aircan DAGs](#using-aircan-dags)
-    - [Example 2: Local file to CKAN DataStore using the Datastore API](#example-2-local-file-to-ckan-datastore-using-the-datastore-api)
-      - [Preliminaries: Setup your CKAN instance](#preliminaries-setup-your-ckan-instance)
-    - [Ignore Example 3: Local file to CKAN DataStore using Postgres](#example-3-local-file-to-ckan-datastore-using-postgres)
-      - [Preliminaries: Setup your CKAN instance](#preliminaries-setup-your-ckan-instance-1)
-      - [Doing the load](#doing-the-load)
-    - [Example 2a: Remote file to DataStore](#example-2a-remote-file-to-datastore)
-    - [Example 3: Auto Load file uploaded to CKAN into CKAN DataStore](#examples-3-auto-load-file-uploaded-to-ckan-into-ckan-datastore)
-      - [Run it](#run-it)
-  - [Tutorials](#tutorials)
-    - [Using Google Cloud Composer](#using-google-cloud-composer)
+In design, it is a lightweight set of patterns and services built on top of widely adopted open source products such as AirFlow and Frictionless.
 
-<!-- tocstop -->
+For CKAN, this an evolution of DataPusher and Xloader (some core code is similar but it is much improved with the runner now being AirFlow).
+
+[CKAN DataStore]: https://docs.ckan.org/en/2.8/maintaining/datastore.html
+
+
+## Features
+
+* Runner via AirFlow
+* Workflow pattern and tooling: pattern/library for creating workflows out of tasks
+* Library of tasks
+* Workflow templates
+* API for status, errors and logging
+* Code samples for integration and deployment on cloud providers e.g. Google Cloud Composer
+* Integrations: CKAN, DataHub
+* Documentation
 
 ## Get Started
 
@@ -59,9 +63,9 @@ By default, the server will be accessible at `http://localhost:8080/` as shown i
 
 
 
-## Examples
+## Examples - Understanding the concept of a DAG
 
-### Example 1: CSV to JSON
+### Example: CSV to JSON
 
 In this example we'll run an AirCan example to convert a CSV to JSON.
 
@@ -96,21 +100,18 @@ Run this DAG:
 
 
 
-## Using Aircan DAGs in a local Airflow instance
+## Using Aircan DAGs
 
-### Example 2: Local file to CKAN DataStore using the Datastore API
+### ckan_api_load_multiple_steps DAG
 
 We'll assume you have:
 
-* a local CKAN setup and running at http://localhost:5000;
-* a dataset (for example, `my-dataset`) with a resource (for example, `my-resource` with the `my-res-id-123` as its `resource_id`);
-* We also need to set up two environment variables for Airflow. Access the [Airflow Variable panel](http://localhost:8080/admin/variable/) and set up `CKAN_SITE_URL` and your `CKAN_SYSADMIN_API_KEY`:
+* a local CKAN instace properly setup and running at http://localhost:5000 (or any other known endpoint of your choice);
+* a dataset (for example, `my-dataset`) 
+* a resouce file to send to CKAN
 
-![Variables configuration](docs/resources/images/aircan_variables.png)
 
-#### Single-node DAG
-
-`api_ckan_load_single_node` is a single-node DAG which deletes,creates and loads a resource to a local or remote CKAN instance. You can run the `api_ckan_load_single_node` by following these steps:
+#### Local Airflow instance 
 
 1. Open your `airflow.cfg` file (usually located at `~/airflow/airflow.cfg`) and point your DAG folder to AirCan:
 
@@ -130,7 +131,7 @@ Note: do not point `dags_folder` to `/your/path/to/aircan/aircan/dags`. It must 
 -------------------------------------------------------------------
 DAGS
 -------------------------------------------------------------------
-ckan_api_load_single_step
+ckan_api_load_multiple_steps
 ...other DAGs...
 ```
 
@@ -148,45 +149,124 @@ export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 
 6. Access the Airflow UI (`http://localhost:8080/`). You should see the DAG `ckan_api_load_single_step` listed.
 
-7. Activate the DAG by hitting on the **Off** button on the interface.
+7. Activate the DAG by hitting on the **Off** button on the interface (It will switch the button state to  **On**).
 
-8. Now we can test the DAG. On your terminal, run:
-
-```bash
-airflow test \
--tp "{ \"resource_id\": \"my-res-id-123\", \
-\"schema_fields_array\": \"[ 'field1', 'field2']\", \
-\"csv_input\": \"/path/to/my.csv\", \
-\"json_output\": \"/path/to/my.json\" }" \
-ckan_api_load_single_step full_load_via_api now
-```
-
-Make sure to replace the parameters accordingly.
-
-* `resource_id` is the id of your resource on CKAN.
-* `schema_fields_array` is the header of your CSV file. Everything is being treated as plain text at this time.
-* `csv_input` is the path to the CSV file you want to upload.
-* The DAG will convert your CSV file to a JSON file and then upload it. `json_output` specifies the path where you want to dump your JSON file.
-
-9. Check your CKAN instance and verify that the data has been loaded.
-
-10. Trigger the DAG with the following:
+8. Now we can manually run the DAG. On your terminal, run:
 
 ```bash
-airflow trigger_dag ckan_api_load_single_step \
- --conf='{ "resource_id": "my-res-id-123", "schema_fields_array": [ "field1", "field2" ], "csv_input": "/path/to.csv", "json_output": "/path/to.json" }'
+airflow trigger_dag ckan_api_load_multiple_steps \
+ --conf='{ "resource": {
+            "path": "path/to/my.csv", 
+            "format": "CSV",
+            "ckan_resource_id": "res-id-123",
+            "schema": {
+                "fields": [
+                    {
+                        "name": "Field_Name",
+                        "type": "number",
+                        "format": "default"
+                    }
+                ]
+            } 
+        },
+        "ckan_config": {
+            "api_key": "API_KEY",
+            "site_url": "URL",
+        }
+      }'
 ```
 
-Do not forget to properly replace the parameters with your data and properly escape the special characters.
-Alternatively, you can just run the DAG with the `airflow run` command.
+Replace the necessary parameters accordingly.
+
+9. It is also possible to use a CKAN endpoint to trigger the DAG. Check https://github.com/datopian/ckanext-aircan for more information.
 
 
-`api_ckan_load_single_node` also works for remote CKAN instances. Just set up your Airflow `CKAN_SITE_URL` variable accordingly.
 
 
-#### Multiple-node DAG
 
-`ckan_api_load_multiple_steps` does the same steps of `api_ckan_load_single_node`, but it uses multiple nodes (tasks). You can repeat the steps of the previous section and run `ckan_api_load_multiple_steps`.
+### ckan_api_load_gcp DAG: Using Google Cloud Composer
+
+1. Sign up for an account at https://cloud.google.com/composer. Create or select an existing project at Google Cloud Platform. For this example, we use one called `aircan-test-project`.
+2. Create an environment at Google Cloud Composer, either by command line or by UI. Make sure you select **Python 3** when creating the project. Here, we create an environment named `aircan-airflow`.
+![Google Cloud Composer environment configuration](docs/resources/images/composer.png)
+
+
+
+After creating your environment, it should appear in your environment list:
+![Google Cloud Composer environment configuration](docs/resources/images/composer2.png)
+
+
+
+3. Override the configuration for `dag_run_conf_overrides_params`:
+![Google Cloud Composer environment configuration](docs/resources/images/composer_airflow_config.png)
+
+
+4. Access the designated DAGs folder (which will be a bucket). Upload the contents of `local/path/to/aircan/aircan` to the bucket:
+![Google Cloud Composer DAGs folder configuration](docs/resources/images/bucket1.png)
+
+The contents of the subfolder `aircan` must be:
+![Google Cloud Composer DAGs folder configuration](docs/resources/images/bucket2.png)
+
+5. Enter the subdirectory `dags` and delete the `__init__.py` file on this folder. It conflicts with Google Cloud Composer configurations.
+
+6. Similarly to what we did on Example 2, access your Airflow instance (created by Google Cloud Composer) and add `CKAN_SITE_URL` and `CKAN_SYSADMIN_API_KEY` as Variables. Now the DAGs must appear on the UI interface.
+
+7. Let's assume you have a resource on `https://demo.ckan.org/` with `my-res-id-123` as its resource_id. We also assume you have, in the root of your DAG bucket on Google Cloud platform, two files: One CSV file with the resource you want to upload, named `r3.csv`, with two columns, `field1` and `field2`. The other file you must have in the root of your your bucket is `r4.json`, an empty JSON file.
+![Google Cloud Composer DAGs folder configuration](docs/resources/images/setup1.png)
+
+Since our DAGs expect parameters, you'll have to trigger them via CLI:
+For example, to trigger `api_ckan_load_single_node`, run (from your terminal):
+```bash
+gcloud composer environments run aircan-airflow \
+     --location us-east1 \
+     trigger_dag -- ckan_api_load_single_step \
+      --conf='{ "resource": {
+            "path": "path/to/my.csv", 
+            "format": "CSV",
+            "ckan_resource_id": "res-id-123",
+            "schema": {
+                "fields": [
+                    {
+                        "name": "Field_Name",
+                        "type": "number",
+                        "format": "default"
+                    }
+                ]
+            } 
+        },
+        "ckan_config": {
+            "api_key": "API_KEY",
+            "site_url": "URL",
+        }
+       }'
+```
+
+Check Google Cloud logs (tip: filter them by your DAG ID, for example, `ckan_api_load_single_step`). It should updload the data of your `.csv` file to `demo.ckan` successfully.
+
+### ckan_api_import_to_bq DAG: Using Google Cloud Composer
+
+While running `test_ckan_import_to_bq` you have to provide appropriate cloud credentials for operation with BigQuery.
+You can get your credentials from here: (https://cloud.google.com/docs/authentication/getting-started).
+Please save your credentials as `google.json` and include in `/tests` directory.
+
+### Integration with CKAN
+
+Please check https://github.com/datopian/ckanext-aircan for more information.
+
+
+## Running Tests
+
+To run all the tests, do:
+
+> make test
+
+You can specify the path to single test by using:
+
+> make test TESTS_DIR=tests/test_file.py
+> e.g make test TESTS_DIR=tests/test_hybrid_load.py
+
+
+========================================================================
 
 
 
@@ -285,60 +365,4 @@ pip install -r requirements-example.txt
 python examples/ckan-upload-csv.py
 ```
 
-## 
-
-### Using Google Cloud Composer
-
-1. Sign up for an account at https://cloud.google.com/composer. Create or select an existing project at Google Cloud Platform. For this example, we use one called `aircan-test-project`.
-2. Create an environment at Google Cloud Composer, either by command line or by UI. Make sure you select **Python 3** when creating the project. Here, we create an environment named `aircan-airflow`.
-![Google Cloud Composer environment configuration](docs/resources/images/composer.png)
-
-
-
-After creating your environment, it should appear in your environment list:
-![Google Cloud Composer environment configuration](docs/resources/images/composer2.png)
-
-
-
-3. Override the configuration for `dag_run_conf_overrides_params`:
-![Google Cloud Composer environment configuration](docs/resources/images/composer_airflow_config.png)
-
-
-4. Access the designated DAGs folder (which will be a bucket). Upload the contents of `local/path/to/aircan/aircan` to the bucket:
-![Google Cloud Composer DAGs folder configuration](docs/resources/images/bucket1.png)
-
-The contents of the subfolder `aircan` must be:
-![Google Cloud Composer DAGs folder configuration](docs/resources/images/bucket2.png)
-
-5. Enter the subdirectory `dags` and delete the `__init__.py` file on this folder. It conflicts with Google Cloud Composer configurations.
-
-6. Similarly to what we did on Example 2, access your Airflow instance (created by Google Cloud Composer) and add `CKAN_SITE_URL` and `CKAN_SYSADMIN_API_KEY` as Variables. Now the DAGs must appear on the UI interface.
-
-7. Let's assume you have a resource on `https://demo.ckan.org/` with `my-res-id-123` as its resource_id. We also assume you have, in the root of your DAG bucket on Google Cloud platform, two files: One CSV file with the resource you want to upload, named `r3.csv`, with two columns, `field1` and `field2`. The other file you must have in the root of your your bucket is `r4.json`, an empty JSON file.
-![Google Cloud Composer DAGs folder configuration](docs/resources/images/setup1.png)
-
-Since our DAGs expect parameters, you'll have to trigger them via CLI:
-For example, to trigger `api_ckan_load_single_node`, run (from your terminal):
-```bash
-gcloud composer environments run aircan-airflow \
-     --location us-east1 \
-     trigger_dag -- ckan_api_load_single_step \
-      --conf='{ "resource_id": "my-res-id-123", "schema_fields_array": [ "field1", "field2" ], "csv_input": "/home/airflow/gcs/dags/r3.csv", "json_output": "/home/airflow/gcs/dags/r4.json" }'
-```
-
-Check the logs (tip: filter them by your DAG ID, for example, `ckan_api_load_single_step`). It should updload the data of your `.csv` file to `demo.ckan` successfully.
-
-## Running Tests
-
-To run all the tests, do:
-
-> make test
-
-You can specify the path to single test by using:
-
-> make test TESTS_DIR=tests/test_file.py
-> e.g make test TESTS_DIR=tests/test_hybrid_load.py
-
-While running `test_ckan_import_to_bq` you have to provide appropriate cloud credentials for operation with BigQuery.
-You can get your credentials from here: https://cloud.google.com/docs/authentication/getting-started 
-Please save your credentials as `google.json` and include in `/tests` directory.
+## Integrations

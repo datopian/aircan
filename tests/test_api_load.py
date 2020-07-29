@@ -1,3 +1,4 @@
+import json
 import unittest
 
 import requests
@@ -24,7 +25,7 @@ class LoadResourceAPITest(unittest.TestCase):
                     'success': True
             }
             mock_load_resource_api.return_value.json.return_value = mocked_res
-            records = [{'FID': 192607, 'Mkt-RF': 2.96, 'SMB': -2.3, 'HML': -2.87, 'RF': 0.22}]
+            records = json.dumps([{'FID': 192607, 'Mkt-RF': 2.96, 'SMB': -2.3, 'HML': -2.87, 'RF': 0.22}])
             assert load_resource_via_api(RESOURCE_ID,
                                          records, CKAN_API_KEY, CKAN_URL) == mocked_res
 
@@ -41,6 +42,6 @@ class LoadResourceAPITest(unittest.TestCase):
             mock_load_resource_api_res.status_code == 404
             mock_load_resource_api.return_value.json.return_value = mocked_res
 
-            records = [{'FID': 192607, 'Mkt-RF': 2.96, 'SMB': -2.3, 'HML': -2.87, 'RF': 0.22}]
+            records = json.dumps([{'FID': 192607, 'Mkt-RF': 2.96, 'SMB': -2.3, 'HML': -2.87, 'RF': 0.22}])
             assert load_resource_via_api('notfound_resource_id',
                                          records, CKAN_API_KEY, CKAN_URL) == mocked_res

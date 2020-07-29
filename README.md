@@ -184,6 +184,7 @@ Replace the necessary parameters accordingly.
 
 
 
+
 ### ckan_api_load_gcp DAG: Using Google Cloud Composer
 
 1. Sign up for an account at https://cloud.google.com/composer. Create or select an existing project at Google Cloud Platform. For this example, we use one called `aircan-test-project`.
@@ -214,6 +215,7 @@ The contents of the subfolder `aircan` must be:
 7. Let's assume you have a resource on `https://demo.ckan.org/` with `my-res-id-123` as its resource_id. We also assume you have, in the root of your DAG bucket on Google Cloud platform, two files: One CSV file with the resource you want to upload, named `r3.csv`, with two columns, `field1` and `field2`. The other file you must have in the root of your your bucket is `r4.json`, an empty JSON file.
 ![Google Cloud Composer DAGs folder configuration](docs/resources/images/setup1.png)
 
+
 Since our DAGs expect parameters, you'll have to trigger them via CLI:
 For example, to trigger `api_ckan_load_single_node`, run (from your terminal):
 ```bash
@@ -242,6 +244,7 @@ gcloud composer environments run aircan-airflow \
 ```
 
 Check Google Cloud logs (tip: filter them by your DAG ID, for example, `ckan_api_load_single_step`). It should updload the data of your `.csv` file to `demo.ckan` successfully.
+
 
 ### ckan_api_import_to_bq DAG: Using Google Cloud Composer
 
@@ -366,3 +369,4 @@ python examples/ckan-upload-csv.py
 ```
 
 ## Integrations
+

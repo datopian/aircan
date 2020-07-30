@@ -24,10 +24,10 @@ def bq_import_csv(table_id, gcs_path, table_schema):
 
         load_job.result()  # Waits for table load to complete.
         destination_table = client.get_table(table_id)
-        logging.info("Loaded {} rows.".format(destination_table.num_rows))
-        return {'success': True, 'message': 'Loaded {} rows'.format(destination_table.num_rows)}
+        if(destination_table):
+            return {'success': True, 'message': 'BigQuery Table created successfully.'}
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        return {"success": False, "message": 'Failed to Create BigQuery Table.'}
     
 def bq_schema_from_table_schema(table_schema):
     mapping = {

@@ -9,8 +9,7 @@ def bq_import_csv(table_id, gcs_path, table_schema):
 
         job_config = bigquery.LoadJobConfig()
 
-        table_schema_json = json.loads(table_schema) 
-        schema = bq_schema_from_table_schema(table_schema_json)
+        schema = bq_schema_from_table_schema(table_schema)
         job_config.schema = schema
 
         job_config.skip_leading_rows = 1
@@ -24,10 +23,10 @@ def bq_import_csv(table_id, gcs_path, table_schema):
 
         load_job.result()  # Waits for table load to complete.
         destination_table = client.get_table(table_id)
-        if(destination_table):
+        if destination_table:
             return {'success': True, 'message': 'BigQuery Table created successfully.'}
     except Exception as e:
-        return {"success": False, "message": 'Failed to Create BigQuery Table.'}
+        return {'success': False, 'message': 'Failed to create BigQuery Table.'}
     
 def bq_schema_from_table_schema(table_schema):
     mapping = {
@@ -39,4 +38,4 @@ def bq_schema_from_table_schema(table_schema):
             mapping.get(field['type'], field['type']),
             'NULLABLE'
             )
-    return [ _convert(field) for field in table_schema['fields'] ]
+    return [ _convert(field) for field in table_schema ]

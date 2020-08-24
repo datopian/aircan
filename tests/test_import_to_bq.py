@@ -1,4 +1,3 @@
-import json
 import unittest
 
 import mock
@@ -15,43 +14,29 @@ class TestBigQueryImport(unittest.TestCase):
         self.dataset = 'nhs_testing'
         table_name = 'test2'
         self.table_id = '%s.%s.' % (project_id, self.dataset) + table_name
-        self.table_schema = {
-            "fields": [
-                    {
-                        "name": "FID",
-                        "title": "FID",
-                        "type": "number",
-                        "description": "FID`"
-                    },
-                    {
-                        "name": "MktRF",
-                        "title": "MktRF",
-                        "type": "number",
-                        "description": "MktRF`"
-                    }
-            ]
-        }
-        self.table_schema_json = json.dumps(self.table_schema)
-        self.fqpath = 'gs://datopian-nhs/csv/EPD_201401.csv'
+        self.table_schema = [{'description': 'FID', 'type': 'number', 'name': 'FID', 'title': 'FID'},
+                             {'description': 'MktRF', 'type': 'number', 'name': 'MktRF', 'title': 'MktRF'}, ]
+        self.fqpath = 'gs://datopian-nhs/csv/EPD_20140111.csv'
 
     def test_bq_import(self):
         with mock.patch('requests.post') as mock_bq_import_csv:
             # Validate Success - bq table created
             mocked_res = {
-                'success': True,
-                'message': 'BigQuery Table created successfully.'
+                "success": True,
+                "message": 'BigQuery Table created successfully.'
             }
             mock_bq_import_csv.return_value.json.return_value = mocked_res
             self.assertEqual(bq_import_csv(self.table_id,
                                            self.fqpath,
-                                           self.table_schema_json), mocked_res)
+                                           self.table_schema), mocked_res)
+
             # Validate Failure - not exisitng gcs uri
             mocked_res_error = {
                 "success": False,
-                "message": 'Failed to Create BigQuery Table.'
+                "message": 'Failed to create BigQuery Table.'
             }
-            mock_bq_import_csv.return_value.json.return_value = \
-                mocked_res_error
-            self.assertEqual(bq_import_csv(self.table_id,
-                                           self.fqpath,
-                                           self.table_schema), mocked_res_error)
+            mock_bq_import_csv.return_value.json.return_value = mocked_res_error
+
+            self.assertEqual(bq_import_csv('notfound_resource_id',
+                                           None,
+                                           None), mocked_res_error)

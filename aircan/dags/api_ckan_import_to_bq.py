@@ -53,14 +53,16 @@ def task_import_resource_to_bq(**context):
     bq_dataset_id = context['params'].get('big_query', {}).get('bq_dataset_id')
     bq_table_name = gc_file_url.split("/")[-1].partition('.')[0].replace('-', '_')
 
-    logging.info("SCHEMA")
-    table_schema = context['params'].get('resource', {}).get('schema')
+    raw_schema = context['params'].get('resource', {}).get('schema')
+    eval_schema = json.loads(raw_schema)
+    eval_schema = ast.literal_eval(eval_schema)
+    schema = eval_schema.get('fields')
+    logging.info("SCHEMA: {}".format(schema))
 
     # sample bq_table_id: "bigquerytest-271707.nhs_test.dag_test"
     bq_table_id = '%s.%s.%s' % (bq_project_id, bq_dataset_id, bq_table_name)          
     logging.info('Importing %s to BQ %s' % (gc_file_url, bq_table_id))
-    bq_import_csv(bq_table_id, gc_file_url, table_schema)
-
+    bq_import_csv(bq_table_id, gc_file_url, schema)
 
 
 import_resource_to_bq_task = PythonOperator(

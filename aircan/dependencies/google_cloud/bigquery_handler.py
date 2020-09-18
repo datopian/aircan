@@ -30,7 +30,8 @@ def bq_import_csv(table_id, gcs_path, table_schema):
     
 def bq_schema_from_table_schema(table_schema):
     mapping = {
-        'number': 'float'
+        'number': 'float',
+        'year': 'integer'
         }
     def _convert(field):
         # TODO: support for e.g. required

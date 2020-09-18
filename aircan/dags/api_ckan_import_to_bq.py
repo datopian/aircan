@@ -48,11 +48,14 @@ dag = DAG(
 
 def task_import_resource_to_bq(**context):
     logging.info('Invoking import resource to bigquery')
-    gc_file_url = context['params'].get('resource', {}).get('path')
+    logging.info("resource: {}".format(context['params'].get('resource', {})))
+
+    gc_file_url = context['params'].get('big_query', {}).get('gcs_uri')
     bq_project_id = context['params'].get('big_query', {}).get('bq_project_id')
     bq_dataset_id = context['params'].get('big_query', {}).get('bq_dataset_id')
-    bq_table_name = gc_file_url.split("/")[-1].partition('.')[0].replace('-', '_')
 
+    bq_table_name = context['params'].get('resource', {}).get('ckan_resource_id').replace('-', '')
+    logging.info("bq_table_name: {}".format(bq_table_name))
     raw_schema = context['params'].get('resource', {}).get('schema')
     eval_schema = json.loads(raw_schema)
     eval_schema = ast.literal_eval(eval_schema)
@@ -63,7 +66,6 @@ def task_import_resource_to_bq(**context):
     bq_table_id = '%s.%s.%s' % (bq_project_id, bq_dataset_id, bq_table_name)          
     logging.info('Importing %s to BQ %s' % (gc_file_url, bq_table_id))
     bq_import_csv(bq_table_id, gc_file_url, schema)
-
 
 import_resource_to_bq_task = PythonOperator(
     task_id='import_resource_to_bq',

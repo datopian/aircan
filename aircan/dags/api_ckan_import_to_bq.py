@@ -53,9 +53,9 @@ def task_import_resource_to_bq(**context):
     gc_file_url = context['params'].get('big_query', {}).get('gcs_uri')
     bq_project_id = context['params'].get('big_query', {}).get('bq_project_id')
     bq_dataset_id = context['params'].get('big_query', {}).get('bq_dataset_id')
-
-    bq_table_name = context['params'].get('resource', {}).get('ckan_resource_id').replace('-', '')
+    bq_table_name = context['params'].get('big_query', {}).get('bq_table_name')
     logging.info("bq_table_name: {}".format(bq_table_name))
+    
     raw_schema = context['params'].get('resource', {}).get('schema')
     eval_schema = json.loads(raw_schema)
     eval_schema = ast.literal_eval(eval_schema)

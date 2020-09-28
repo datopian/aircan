@@ -10,13 +10,14 @@ def bq_import_csv(table_id, gcs_path, table_schema):
         job_config = bigquery.LoadJobConfig()
 
         schema = bq_schema_from_table_schema(table_schema)
-        job_config.schema = schema
+        #job_config.schema = schema
 
         job_config.skip_leading_rows = 1
         job_config.source_format = bigquery.SourceFormat.CSV
         # overwrite a Table
         job_config.write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
-
+        # set schema autodetect
+        job_config.autodetect=True
         load_job = client.load_table_from_uri(
             gcs_path, table_id, job_config=job_config
         )

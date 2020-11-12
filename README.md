@@ -40,6 +40,18 @@ In addition, if you want to use it with CKAN you will want:
 
 * CKAN extension: https://github.com/datopian/ckanext-aircan. This hooks key actions from CKAN into AirCan and provides an API to run the flows (DAGs).
 
+<img src="https://docs.google.com/drawings/d/e/2PACX-1vRkwxYVcEmK3H8lz07WXcH7j_hhoIVDmVBQbzRzC4LhAgNUwtkNDuxB_IZp-hpbBhF_uWUvCVCQNN54/pub?w=831&amp;h=797">
+
+How it works in e.g. CKAN:
+
+* Resource update on CKAN (via UI or API)
+* ckanext-aircan calls `aircan_submit(dag_id, run_id, config)`
+* Which calls AirFlow instanceto run the DAG XXX (configurable)
+* DAG runs on AirFlow [Ex: data load to datastore]
+  * Goes to storage and gets the file
+  * Loads into CKAN DataStore over the DataStore API
+* Can then call `aircan_status`: which calls AirFlow for "is it running" + Stackdriver for logs
+
 ## Installation
 
 * Set up AirFlow. For production we recommend using Google Cloud Composer or another hosted AirFlow instance. For trialling and development you can setup your own local AirFlow instance.

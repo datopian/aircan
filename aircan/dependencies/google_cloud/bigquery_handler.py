@@ -10,14 +10,14 @@ def bq_import_csv(table_id, gcs_path, table_schema):
         job_config = bigquery.LoadJobConfig()
 
         schema = bq_schema_from_table_schema(table_schema)
-        #job_config.schema = schema
+        job_config.schema = schema
 
         job_config.skip_leading_rows = 1
         job_config.source_format = bigquery.SourceFormat.CSV
         # overwrite a Table
         job_config.write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
         # set schema autodetect
-        job_config.autodetect=True
+        # job_config.autodetect=True
         load_job = client.load_table_from_uri(
             gcs_path, table_id, job_config=job_config
         )
@@ -31,9 +31,23 @@ def bq_import_csv(table_id, gcs_path, table_schema):
     
 def bq_schema_from_table_schema(table_schema):
     mapping = {
-        'number': 'float',
-        'year': 'integer'
-        }
+        'string': 'string',
+        "number": 'numeric',
+        "integer": 'numeric',
+        "boolean": 'boolean',
+        'object':'string',
+        "array":'string',
+        'date':'date',
+        'time':'time',
+        'datetime': 'datetime',
+        "year": 'numeric',
+        "yearmonth": 'string',
+        "duration":'datetime',
+        "geopoint": 'string',
+        "geojson" : 'string',
+        'any': 'string'
+      }
+
     def _convert(field):
         # TODO: support for e.g. required
         return bigquery.SchemaField(field['name'],

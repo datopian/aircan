@@ -32,19 +32,19 @@ def bq_import_csv(table_id, gcs_path, table_schema):
 def bq_schema_from_table_schema(table_schema):
     mapping = {
         'string': 'string',
-        "number": 'numeric',
-        "integer": 'numeric',
-        "boolean": 'boolean',
+        'number': 'numeric',
+        'integer': 'numeric',
+        'boolean': 'boolean',
         'object':'string',
-        "array":'string',
+        'array':'string',
         'date':'date',
         'time':'time',
         'datetime': 'datetime',
-        "year": 'numeric',
-        "yearmonth": 'string',
-        "duration":'datetime',
-        "geopoint": 'string',
-        "geojson" : 'string',
+        'year': 'numeric',
+        'yearmonth': 'string',
+        'duration':'datetime',
+        'geopoint': 'string',
+        'geojson' : 'string',
         'any': 'string'
       }
 

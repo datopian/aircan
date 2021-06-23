@@ -16,8 +16,8 @@ def bq_import_csv(table_id, gcs_path, table_schema):
         job_config.source_format = bigquery.SourceFormat.CSV
         # overwrite a Table
         job_config.write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
-        # set schema autodetect
-        # job_config.autodetect=True
+        # set 'True' for schema autodetect but turning it off since we define schema in explicitly when publishing data using datapub
+        # job_config.autodetect = True
         load_job = client.load_table_from_uri(
             gcs_path, table_id, job_config=job_config
         )

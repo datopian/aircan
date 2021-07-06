@@ -48,13 +48,33 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
 
 def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan_site_url):
     log.info('Create Datastore Table method starts')
+    
+    # schema field type to postgres field type mapping  
+    DATASTORE_TYPE_MAPPING = {
+      'integer': 'integer',
+      'number': 'numeric',
+      'datetime': 'timestamp', 
+      'date': 'date',
+      'time': 'time', 
+      'string': 'text',
+      'duration': 'interval',
+      'boolean': 'boolean',
+      'object': 'jsonb',
+      'array': 'array',
+      'year': 'text',
+      'yearmonth': 'text',
+      'geopoint': 'text',
+      'geojson': 'jsonb',
+      'any': 'text'
+    }
+
     data_dict = dict(
         # resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
         resource_id=data_resource_id,
         fields=[
             {
                 'id': f['name'],
-                'type': f['type']
+                'type': DATASTORE_TYPE_MAPPING.get(f['type'], 'text'),
             } for f in resource_schema],
         )
     data_dict['records'] = None  # just create an empty table

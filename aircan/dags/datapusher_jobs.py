@@ -67,7 +67,7 @@ def datapusher_jobs_checks():
     jobs_dict = get_datapusher_jobs(CKAN_SITE_URL)
     for job in jobs_dict:
         if job['state'] == 'pending' and  job['last_updated']:
-            time_since_last_updated = datetime.utcnow() - datetime.fromisoformat(job['entity_id'])
+            time_since_last_updated = datetime.utcnow() - datetime.fromisoformat(job['last_updated'])
              # Only submit if it has been pending for the last 5 hours.
             if time_since_last_updated > timedelta(hours=5):
                 logging.info('Resubmitting {0}, was pending from {1} ago.'.format(job['entity_id'], time_since_last_updated))

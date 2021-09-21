@@ -19,7 +19,7 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.models import Variable
 
 CKAN_SITE_URL =  Variable.get("DATAPUSHER_SITE_URL")
-CKAN_API_KEY =Variable.get("DATAPUSHER_API_KEY")
+CKAN_API_KEY = Variable.get("DATAPUSHER_API_KEY")
 
 
 args = {
@@ -67,7 +67,7 @@ def datapusher_jobs_checks():
     jobs_dict = get_datapusher_jobs(CKAN_SITE_URL)
     for job in jobs_dict:
         if job['state'] == 'pending' and  job['last_updated']:
-            time_since_last_updated = datetime.utcnow() - datetime.fromisoformat('2021-09-15 01:42:36.605660')
+            time_since_last_updated = datetime.utcnow() - datetime.strptime(job['last_updated'], r"%Y-%m-%dT%H:%M:%S.%f")
              # Only submit if it has been pending for the last 5 hours.
             if time_since_last_updated > timedelta(hours=5):
                 logging.info('Resubmitting {0}, was pending from {1} ago.'.format(job['entity_id'], time_since_last_updated))

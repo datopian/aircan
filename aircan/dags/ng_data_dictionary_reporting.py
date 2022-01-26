@@ -121,7 +121,7 @@ def dispatch_email(**context):
     resource_list =  context['task_instance'].xcom_pull(task_ids='check_empty_data_dictionary')
     message = Mail(
         from_email=MAIL_FROM,
-        to_emails=('sagar.ghimire@datopian.com', 'info@sagarg.com.np'),
+        to_emails=tuple(MAIL_TO.split(',')),
         subject='Empty data dictionary report.',
         html_content= HTML_report_generate(resource_list))
     try:

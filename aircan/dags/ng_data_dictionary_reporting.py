@@ -72,7 +72,6 @@ def check_empty_data_dictionary(ds, **kwargs):
         fields = get_data_dictionary(res_id)
         if(fields):
             data_dictionary = ['info' in f for f in fields]
-            print(data_dictionary)
             if True not in data_dictionary:
                 report.append(res_id)
     return report

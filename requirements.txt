@@ -103,6 +103,6 @@ werkzeug==0.16.1          # via apache-airflow, flask, flask-caching, flask-jwt-
 wtforms==2.3.1            # via flask-admin, flask-wtf
 zipp==3.1.0               # via importlib-metadata
 zope.deprecation==4.4.0   # via apache-airflow
-
+sendgrid==6.9.4           # via sendgrid 
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools

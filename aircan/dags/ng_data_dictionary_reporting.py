@@ -12,7 +12,7 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.utils.dates import days_ago
 from airflow.operators.email_operator import EmailOperator
 from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+from sendgrid.helpers.mail import Mail, To
 from string import Template
 from time import sleep
 
@@ -22,24 +22,23 @@ MAIL_FROM = Variable.get("NG_MAIL_FROM")
 MAIL_TO = Variable.get("NG_MAIL_TO")
 
 args = {
-    'start_date': days_ago(0)
+    "start_date": days_ago(0)
 }
 
 dag = DAG(
-    dag_id='ng_data_example_logs',
+    dag_id="ng_data_example_logs",
     default_args=args,
-    schedule_interval='0 0 * * *'
+    schedule_interval="0 0 * * 0"
 )
 
 def get_all_datastore_tables():
     try:
         logging.info("Retriving all datastore tables.")
-        response = requests.get(
-            urljoin(CKAN_URL, '/api/3/action/datastore_search?resource_id=_table_metadata')
-        )
+        response = requests.get(urljoin(CKAN_URL, "/api/3/action/datastore_search?resource_id=_table_metadata"),
+                     headers = {"User-Agent": "ckan-others/latest  (internal API call from airflow dag)"})
         response.raise_for_status()
         if response.status_code == 200:
-           return [resource['name'] for resource in response.json()['result']['records']]
+           return [resource["name"] for resource in response.json()["result"]["records"]]
             
     except requests.exceptions.HTTPError as e:
             return e.response.text 
@@ -49,12 +48,12 @@ def get_data_dictionary(res_id):
     try:
         logging.info("Retriving fields infomation for {res_id}".format(res_id=res_id))
         response = requests.get(
-            urljoin(CKAN_URL, 
-                    '/api/3/action/datastore_search?resource_id={0}&limit=0'.format(res_id))
+            urljoin(CKAN_URL, "/api/3/action/datastore_search?resource_id={0}&limit=0".format(res_id)),
+                    headers={"User-Agent": "ckan-others/latest  (internal API call from airflow dag)"}
         )
         response.raise_for_status()
         if response.status_code == 200:
-            return response.json()['result']['fields']
+            return response.json()["result"]["fields"]
 
     except requests.exceptions.HTTPError as e:
         logging.error("Failed to get fields infomation for {res_id}".format(res_id=res_id))
@@ -63,7 +62,6 @@ def get_data_dictionary(res_id):
 
 def check_empty_data_dictionary(ds, **kwargs):
     all_datastore_tables = get_all_datastore_tables()
-    all_datastore_tables = all_datastore_tables[:30]
     logging.info("Retriving all datastore tables.")
     report = []
     for res_id in all_datastore_tables:
@@ -117,29 +115,30 @@ def HTML_report_generate(resource_list):
     return Template(html).safe_substitute(table_row=table_row)
 
 def dispatch_email(**context):
-    resource_list =  context['task_instance'].xcom_pull(task_ids='check_empty_data_dictionary')
-    message = Mail(
-        from_email=MAIL_FROM,
-        to_emails=tuple(MAIL_TO.split(',')),
-        subject='Empty data dictionary report.',
-        html_content= HTML_report_generate(resource_list))
-    try:
-        sg = SendGridAPIClient(SENDGRID_KEY)
-        response = sg.send(message)
-        logging.info("{0} - Report successfully sent via email.".format(response.status_code))
-    except Exception as e:
-        logging.info(e.message)
+    resource_list =  context["task_instance"].xcom_pull(task_ids="check_empty_data_dictionary")
+    if resource_list: 
+        message = Mail(
+            from_email=MAIL_FROM,
+            to_emails=[To("{0}".format(recipient)) for recipient in MAIL_TO.split(',')],
+            subject="Empty data dictionary report.",
+            html_content= HTML_report_generate(resource_list))
+        try:
+            sg = SendGridAPIClient(SENDGRID_KEY)
+            response = sg.send(message)
+            logging.info("{0} - Report successfully sent via email.".format(response.status_code))
+        except Exception as e:
+            logging.info(e.message)
 
 
 check_empty_data_dictionary_task = PythonOperator(
-    task_id='check_empty_data_dictionary',
+    task_id="check_empty_data_dictionary",
     provide_context=True,
     python_callable=check_empty_data_dictionary,
     dag=dag,
 )
 
 dispatch_email_task = PythonOperator(
-    task_id='dispatch_email',
+    task_id="dispatch_email",
     provide_context=True,
     python_callable=dispatch_email,
     dag=dag,

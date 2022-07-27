@@ -50,7 +50,7 @@ def get_config():
 
 def task_delete_datastore_table():
     logging.info('Invoking Delete Datastore')
-    return load.delete_datastore_table(data_resource, get_config())
+    return delete_datastore_table(data_resource, get_config())
 
 
 delete_datastore_table_task = PythonOperator(
@@ -63,7 +63,7 @@ delete_datastore_table_task = PythonOperator(
 
 def task_create_datastore_table():
     logging.info('Invoking Create Datastore')
-    return load.create_datastore_table(data_resource, get_config())
+    return create_datastore_table(data_resource, get_config())
 
 
 create_datastore_table_task = PythonOperator(
@@ -84,7 +84,7 @@ def get_connection():
 
 def task_load_csv_to_postgres_via_copy():
     logging.info('Loading CSV to postgres')
-    return load.load_csv_to_postgres_via_copy(
+    return load_csv_to_postgres_via_copy(
         data_resource, get_config(), get_connection()
     )
 
@@ -98,7 +98,7 @@ load_csv_to_postgres_via_copy_task = PythonOperator(
 
 def task_restore_indexes_and_set_datastore_active():
     logging.info('Restore Indexes')
-    return load.restore_indexes_and_set_datastore_active(
+    return restore_indexes_and_set_datastore_active(
         data_resource, get_config(), get_connection()
     )
 

@@ -1,4 +1,3 @@
-import json
 import unittest
 
 import requests
@@ -24,10 +23,13 @@ class LoadResourceAPITest(unittest.TestCase):
                         'success': True},
                     'success': True
             }
+            mock_load_resource_api.return_value.status_code = 200
             mock_load_resource_api.return_value.json.return_value = mocked_res
-            records = json.dumps([{'FID': 192607, 'Mkt-RF': 2.96, 'SMB': -2.3, 'HML': -2.87, 'RF': 0.22}])
-            assert load_resource_via_api(RESOURCE_ID,
-                                         records, CKAN_API_KEY, CKAN_URL) == mocked_res
+            res_dict = {
+                'ckan_resource_id': 'xxx-xxx-xxx',
+                'path': 'https://people.sc.fsu.edu/~jburkardt/data/csv/addresses.csv'
+                }
+            assert load_resource_via_api(res_dict, CKAN_API_KEY, CKAN_URL) == {"success": True}
 
     def test_load_resource_via_api_failure(self):
         with patch.object(requests, 'post') as mock_load_resource_api:
@@ -39,9 +41,10 @@ class LoadResourceAPITest(unittest.TestCase):
                 'success': False
             }
             mock_load_resource_api.return_value = mock_load_resource_api_res = Mock()
-            mock_load_resource_api_res.status_code == 404
+            mock_load_resource_api_res.status_code = 404
             mock_load_resource_api.return_value.json.return_value = mocked_res
-
-            records = json.dumps([{'FID': 192607, 'Mkt-RF': 2.96, 'SMB': -2.3, 'HML': -2.87, 'RF': 0.22}])
-            assert load_resource_via_api('notfound_resource_id',
-                                         records, CKAN_API_KEY, CKAN_URL) == mocked_res
+            res_dict = {
+                'ckan_resource_id': 'xxx-xxx-xxx',
+                'path': 'https://people.sc.fsu.edu/~jburkardt/data/csv/addresses.csv'
+                }
+            assert load_resource_via_api(res_dict, CKAN_API_KEY, CKAN_URL) == {"success": False}

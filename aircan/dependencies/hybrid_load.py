@@ -1,29 +1,103 @@
 # Standard library imports
-from urllib.parse import urljoin
 import hashlib
-import logging as log
+import logging
+import datetime
 
 # Third-party library imports
 import json
 import psycopg2
 import requests
+from urllib.parse import urljoin
+from frictionless import describe
+
 from aircan import RequestError, DatabaseError
-from sqlalchemy import create_engine
 
 # =============== API ACCESS ===============
 
-def load_csv(data_resource, config={}, connection=None):
-    '''Loads a CSV into DataStore. Does not create the indexes.'''
-    # prepare_good_csv() # TODO come back to this later ..
-    # This should work over API (not inside CKAN process) or do direct ...
+def aircan_status_update(site_url, ckan_api_key, status_dict):
+    """
+    Update aircan run status like pending, error, process, complete 
+    on ckan with message.
+    """
+    logging.info('Updating data loading status')
+    try:
+        request_data = { 
+            'resource_id': status_dict.get('res_id', ''),
+            'state': status_dict.get('state', ''),
+            'last_updated': str(datetime.datetime.utcnow()),
+            'message': status_dict.get('message', ''),
+        }
 
-    delete_datastore_table(data_resource, config=config)
-    create_datastore_table(data_resource, config=config)
-    delete_index(data_resource, config=config, connection=connection)
-    load_csv_to_postgres_via_copy(
-        data_resource, config=config, connection=connection)
-    restore_indexes_and_set_datastore_active(
-        data_resource, config=config, connection=connection)
+        if status_dict.get('error', False):
+            request_data.update({'error': {
+                'message' : status_dict.get('error', '')
+            }})
+
+        url = urljoin(site_url, '/api/3/action/aircan_status_update')
+        response = requests.post(url,
+                        data=json.dumps(request_data),
+                        headers={'Content-Type': 'application/json',
+                                'Authorization': ckan_api_key})
+        if response.status_code == 200:
+            resource_json = response.json()
+            logging.info('Loading status updated successfully in CKAN.')
+            return {'success': True, 'response_resource': resource_json}
+        else:
+            return response.json()
+    except Exception as e:
+        return {"success": False, "errors": [e]}
+
+def fetch_and_read(resource_dict, site_url, api_key):
+    """
+    Fetch and read source type, metadata and schema from
+    ckan resource URl.
+    """
+    logging.info('Fetching resource data from url')
+    try:
+        resource = describe(resource_dict['path'], type="resource")
+        status_dict = { 
+                'res_id': resource_dict['ckan_resource_id'],
+                'state': 'progress',
+                'message': 'Fetching datafile from {0}.'.format(resource_dict['path']),
+            }
+        aircan_status_update(site_url, api_key, status_dict)
+        return {'sucess': True, 'resource': resource}
+
+    except Exception as err:
+        status_dict = { 
+                'res_id': resource_dict['ckan_resource_id'],
+                'state': 'error',
+                'message': 'Failed to fetch data file.',
+                'error': str(err)
+            }
+        aircan_status_update(site_url, api_key, status_dict)
+        return {"success": False, "errors": [err]}
+
+## Fetch previous data dictionary and compare
+def compare_schema(site_url, ckan_api_key, res_id, schema):
+    """
+    compare old datastore schema with new schema to know wheather 
+    it changed or not.
+    """
+    logging.info('fetching old data dictionary {0}'.format(res_id))
+    try:
+        url = urljoin(site_url, '/api/3/action/datastore_info')
+        response = requests.post(url,
+                        data=json.dumps({'id': res_id }),
+                        headers={'Content-Type': 'application/json',
+                                'Authorization': ckan_api_key})
+        if response.status_code == 200:
+            resource_json = response.json()
+            old_schema = resource_json['result']['schema'].keys()
+            new_schema = [field_name['name'] for field_name in schema]
+            if set(old_schema) == set(new_schema):
+                return True
+        else:
+            return False
+    except Exception as e: 
+        logging.log('Failed to fetch data dictionary for {0}'.format(res_id))
+        return True
+
 
 
 def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
@@ -38,17 +112,29 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
             }
         )
         if response.status_code == 200 or response.status_code == 404:
-            log.info('Table was deleted successfuly')
+            logging.info('Table was deleted successfuly')
+
+            status_dict = { 
+                'res_id': data_resource_id,
+                'state': 'progress',
+                'message': 'New table detected, existing table is being deleted.'
+            }
+            aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
             return {'success': True, 'message': 'Table deleted successfully.'}
         else:
             raise RequestError(response.json()['error'])
     except Exception as e:
+        status_dict = { 
+                'res_id': data_resource_id,
+                'state': 'error',
+                'message': 'Failed to clean up table.'
+            }
+        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
         return str(e)
 
 
 def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan_site_url):
-    log.info('Create Datastore Table method starts')
-    
+    logging.info('Create Datastore Table method starts')
     # schema field type to postgres field type mapping  
     DATASTORE_TYPE_MAPPING = {
       'integer': 'integer',
@@ -86,15 +172,41 @@ def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan
             json=data_dict
         )
         if response.status_code == 200:
-            log.info('Table was created successfuly')
+            logging.info('Table was created successfuly')
+            status_dict = { 
+                'res_id': data_resource_id,
+                'state': 'progress',
+                'message': 'Determined headers and types: {0}'.format(json.dumps(data_dict['fields']))
+            }
+            aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
             return {'success': True, 'message': 'Table created Successfully.'}
         else:
             raise RequestError(response.json()['error'])
     except Exception as e:
+        status_dict = { 
+                'res_id': data_resource_id,
+                'state': 'error',
+                'message': 'Failed to create table in database.'
+            }
+        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
         return str(e)
 
 
 # =============== POTSGRES ACCESS ===============
+
+
+def load_csv(data_resource, config={}, connection=None):
+    '''Loads a CSV into DataStore. Does not create the indexes.'''
+    # prepare_good_csv() # TODO come back to this later ..
+    # This should work over API (not inside CKAN process) or do direct ...
+
+    delete_datastore_table(data_resource, config=config)
+    create_datastore_table(data_resource, config=config)
+    delete_index(data_resource, config=config, connection=connection)
+    load_csv_to_postgres_via_copy(
+        data_resource, config=config, connection=connection)
+    restore_indexes_and_set_datastore_active(
+        data_resource, config=config, connection=connection)
 
 
 def delete_index(data_resource, config={}, connection=None):
@@ -116,7 +228,7 @@ def delete_index(data_resource, config={}, connection=None):
             return {'success': True}
         except psycopg2.DataError as e:
             error_str = str(e)
-            log.warning(error_str)
+            logging.warning(error_str)
             raise DatabaseError(f"Error during deleting indexes: {error_str}")
         except Exception as e:
             raise DatabaseError(f"Error during deleting indexes: {error_str}")
@@ -162,7 +274,7 @@ def restore_indexes_and_set_datastore_active(data_resource,
                 cur.execute(sql_index_string)
         except psycopg2.errors.UndefinedTable as e:
                 error_str = str(e)
-                log.warning(error_str)
+                logging.warning(error_str)
                 raise DatabaseError(f"Error during reindexing: {error_str}")
     except Exception as e:
         return str(e)
@@ -219,7 +331,7 @@ def load_csv_to_postgres_via_copy(data_resource, config={}, connection=None):
                     # 'extra data: "paul,pa\xc3\xbcl"\n'
                     # But logging and exceptions need a normal (7 bit) str
                     error_str = str(e)
-                    log.warning(error_str)
+                    logging.warning(error_str)
                     raise DatabaseError(f"Data Error during COPY command: {error_str}")
                 except Exception as e:
                     raise DatabaseError(f"Generic Error during COPY: {e}")

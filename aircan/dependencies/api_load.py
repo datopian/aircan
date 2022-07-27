@@ -3,12 +3,13 @@ from urllib.parse import urljoin
 import hashlib
 import datetime
 import decimal
-import logging as log
+import logging
 
 # Third-party library imports
 import json
 import requests
-
+from aircan.dependencies.hybrid_load import aircan_status_update
+from frictionless import Resource, Layout
 
 class DatastoreEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -20,26 +21,58 @@ class DatastoreEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def load_resource_via_api(ckan_resource_id, records, ckan_api_key, ckan_site_url):
-    log.info("Loading resource via API lib")
+def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
+    logging.info("Loading resource via API lib")
     try:
-        request = {
-           'resource_id': ckan_resource_id,
-           'force': True,
-           'records': json.loads(records)}
+        offset_rows = 0
+        row_chunk = 16384
 
-        url = urljoin(ckan_site_url, '/api/3/action/datastore_create')
-        response = requests.post(url,
-                      data=json.dumps(request, cls=DatastoreEncoder),
-                      headers={'Content-Type': 'application/json',
-                               'Authorization': ckan_api_key})
-        log.info(response)
-        if response.status_code == 200:
-            resource_json = response.json()
-            log.info('Table was created successfuly')
-            return {'success': True, 'response_resource': resource_json}
-        else:
-            return response.json()
-
-    except Exception as e:
-        return {"success": False, "errors": [e]}
+        # Push data untill records is empty 
+        while True:
+            if offset_rows == 0:
+                layout = Layout(limit_rows=row_chunk)
+            else:
+                layout = Layout(limit_rows=row_chunk, offset_rows=offset_rows)
+            with Resource(resource_dict['path'], layout=layout) as resource:
+                    records = [row.to_dict(json=True) for row in resource.row_stream]
+                    if not records:
+                        status_dict = { 
+                                'res_id': resource_dict['ckan_resource_id'],
+                                'state': 'complete',
+                                'message': 'Successfully pushed {0} entries to "{1}"'
+                                        .format(offset_rows,resource_dict['ckan_resource_id'])
+                            }
+                        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
+                        return {'success': True}
+                    else:
+                        offset_rows += len(records)
+                        payload = {
+                            'resource_id': resource_dict['ckan_resource_id'],
+                            'force': True,
+                            'records': records,
+                            'method': 'insert'
+                        }
+                        url = urljoin(ckan_site_url, '/api/3/action/datastore_upsert')
+                        response = requests.post(url,
+                                    data=json.dumps(payload, cls=DatastoreEncoder),
+                                    headers={'Content-Type': 'application/json',
+                                            'Authorization': ckan_api_key})
+                        response.raise_for_status()
+                        if response.status_code == 200:
+                            status_dict = { 
+                                'res_id': resource_dict['ckan_resource_id'],
+                                'state': 'complete',
+                                'message': 'Pushed {0} entries of records.'.format(offset_rows)
+                            }
+                            aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
+                        else:
+                            raise requests.HTTPError('Failed to make request on CKAN API.')
+    except Exception as err:
+        status_dict = { 
+                'res_id': resource_dict['ckan_resource_id'],
+                'state': 'error',
+                'message': 'Failed to push data into datastore DB.',
+                'error': str(err)
+            }
+        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
+        return {"success": False}

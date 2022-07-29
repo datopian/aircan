@@ -21,7 +21,8 @@ setup(
         'psycopg2',
         'python-dotenv',
         'requests',
-        'sqlalchemy'
+        'sqlalchemy',
+        'frictionless'
     ],
     package_data={},
     keywords='aircan, airflow, aircan-lib',

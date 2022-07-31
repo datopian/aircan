@@ -22,54 +22,54 @@ from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.utils.dates import days_ago
 from airflow.models import Variable
 
-APPEND_DATA_WHHEN_SCHEMA_SAME= Variable.get("APPEND_DATA_WHHEN_SCHEMA_SAME", False)
+APPEND_DATA_WHHEN_SCHEMA_SAME= Variable.get('APPEND_DATA_WHHEN_SCHEMA_SAME', False)
 
 args = {
     'start_date': days_ago(0),
     'params': { 
-        "resource": {
-            "path": "path/to/my.csv", 
-            "format": "CSV",
-            "ckan_resource_id": "res-id-123",
-            "schema": {
-                "fields": [
+        'resource': {
+            'path': 'path/to/my.csv', 
+            'format': 'CSV',
+            'ckan_resource_id': 'res-id-123',
+            'schema': {
+                'fields': [
                     {
-                        "name": "Field_Name",
-                        "type": "number",
-                        "format": "default"
+                        'name': 'Field_Name',
+                        'type': 'number',
+                        'format': 'default'
                     }
                 ]
             } 
         },
-        "ckan_config": {
-            "api_key": "API_KEY",
-            "site_url": "URL",
+        'ckan_config': {
+            'api_key': 'api_key',
+            'site_url': "URL",
         },
-        "output_bucket": str(date.today())
+        'output_bucket': str(date.today())
     }
 }
 
 dag = DAG(
-    dag_id="ckan_datastore_loader",
+    dag_id='ckan_datastore_loader',
     default_args=args,
     schedule_interval=None,
-    description="CKAN Datastore data loader",
-    tags=["CKAN Datastore loader"],
+    description='CKAN Datastore data loader',
+    tags=['CKAN Datastore loader'],
     doc_md=__doc__,
 )
 
 
 # [START fetch_and_read_data_task]
 def task_fetch_and_read(**context):
-    logging.info("Fetching resource data from url")
-    resource_dict = context["params"].get("resource", {})
-    ckan_api_key = context["params"].get("ckan_config", {}).get("api_key")
-    ckan_site_url = context["params"].get("ckan_config", {}).get("site_url")
+    logging.info('Fetching resource data from url')
+    resource_dict = context['params'].get('resource', {})
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     return fetch_and_read(resource_dict, ckan_site_url, ckan_api_key)
 
 
 fetch_and_read_data_task = PythonOperator(
-    task_id="fetch_resource_data",
+    task_id='fetch_resource_data',
     provide_context=True,
     python_callable=task_fetch_and_read,
     dag=dag,
@@ -87,29 +87,29 @@ fetch_and_read_data_task = PythonOperator(
 
 # [START check_schema_task]
 def task_check_schema(**context):
-    ti = context["ti"]
-    resource_id = context["params"].get("resource", {}).get("ckan_resource_id")
-    ckan_api_key = context["params"].get("ckan_config", {}).get("api_key")
-    ckan_site_url = context["params"].get("ckan_config", {}).get("site_url")
-    raw_schema = context["params"].get("resource", {}).get("schema", False)
-    if raw_schema and raw_schema != "{}":
+    ti = context['ti']
+    resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
+    raw_schema = context['params'].get('resource', {}).get('schema', False)
+    if raw_schema and raw_schema != '{}':
         eval_schema = json.loads(raw_schema)
         eval_schema = ast.literal_eval(eval_schema)
-        schema = eval_schema.get("fields")
+        schema = eval_schema.get('fields')
     else:
-        xcom_result = ti.xcom_pull(task_ids="fetch_resource_data")
-        schema = xcom_result["resource"].get("schema", {}).get("fields", [])
+        xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
+        schema = xcom_result['resource'].get('schema', {}).get('fields', [])
 
     if APPEND_DATA_WHHEN_SCHEMA_SAME:
         is_same_as_old_schema = compare_schema(
             ckan_site_url, ckan_api_key, resource_id, schema
         )
         if is_same_as_old_schema:
-            return ["push_data_into_datastore"]
+            return ['push_data_into_datastore']
         else:
-            return ["create_dastore_table", "push_data_into_datastore"]
+            return ['create_dastore_table', 'push_data_into_datastore']
     else:
-        return ["create_dastore_table", "push_data_into_datastore"]
+        return ['create_dastore_table', 'push_data_into_datastore']
 
 
 check_schema_task = BranchPythonOperator(
@@ -131,20 +131,20 @@ check_schema_task = BranchPythonOperator(
 
 # [START create_datastore_table_task]
 def task_create_datastore_table(**context):
-    ti = context["ti"]
-    logging.info("Invoking Create Datastore")
-    resource_id = context["params"].get("resource", {}).get("ckan_resource_id")
-    ckan_api_key = context["params"].get("ckan_config", {}).get("api_key")
-    ckan_site_url = context["params"].get("ckan_config", {}).get("site_url")
-    xcom_result = ti.xcom_pull(task_ids="fetch_resource_data")
-    schema = xcom_result["resource"].get("schema", {}).get("fields", [])
-    logging.info("Invoking Delete Datastore")
+    ti = context['ti']
+    logging.info('Invoking Create Datastore')
+    resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
+    xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
+    schema = xcom_result['resource'].get('schema', {}).get('fields', [])
+    logging.info('Invoking Delete Datastore')
     delete_datastore_table(resource_id, ckan_api_key, ckan_site_url)
     create_datastore_table(resource_id, schema, ckan_api_key, ckan_site_url)
 
 
 create_datastore_table_task = PythonOperator(
-    task_id="create_dastore_table",
+    task_id='create_dastore_table',
     provide_context=True,
     python_callable=task_create_datastore_table,
     dag=dag,
@@ -161,18 +161,18 @@ create_datastore_table_task = PythonOperator(
 
 # [START push_data_into_datastore_task]
 def task_push_data_into_datastore(**context):
-    logging.info("Loading resource via API")
-    resource_dict = context["params"].get("resource", {})
-    ckan_api_key = context["params"].get("ckan_config", {}).get("api_key")
-    ckan_site_url = context["params"].get("ckan_config", {}).get("site_url")
+    logging.info('Loading resource via API')
+    resource_dict = context['params'].get('resource', {})
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     return load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url)
 
 
 push_data_into_datastore_task = PythonOperator(
-    task_id="push_data_into_datastore",
+    task_id='push_data_into_datastore',
     provide_context=True,
     python_callable=task_push_data_into_datastore,
-    trigger_rule="none_failed_or_skipped",
+    trigger_rule='none_failed_or_skipped',
     dag=dag,
     doc_md=dedent(
         """\

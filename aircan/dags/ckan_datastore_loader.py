@@ -4,25 +4,35 @@ This dag reads the CKAN resource files and push data into the CKAN datastore
 via datastore API.
 """
 
+import imp
 import logging
 import json
 import ast
 from textwrap import dedent
 from datetime import date
-# Local imports
-from aircan.dependencies.hybrid_load import (
-    create_datastore_table, delete_datastore_table,
-    fetch_and_read, compare_schema
-)
-from aircan.dependencies.api_load import load_resource_via_api
-# Third-party library imports
+
 from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.utils.dates import days_ago
 from airflow.models import Variable
 
-APPEND_DATA_WHHEN_SCHEMA_SAME= Variable.get('APPEND_DATA_WHHEN_SCHEMA_SAME', False)
+from aircan.dependencies.postgres_loader import (
+    load_csv_to_postgres_via_copy,
+    delete_index,
+    restore_indexes_and_set_datastore_active
+    )
+from aircan.dependencies.utils import get_connection
+from aircan.dependencies.api_loader import (
+    fetch_and_read,
+    compare_schema,
+    create_datastore_table,
+    delete_datastore_table,
+    load_resource_via_api
+    )
+
+APPEND_DATA_WHHEN_SCHEMA_SAME = Variable.get('APPEND_DATA_WHHEN_SCHEMA_SAME', False)
+LOAD_WITH_POSTGRES_COPY = Variable.get('LOAD_WITH_POSTGRES_COPY', False)
 
 args = {
     'start_date': days_ago(0),
@@ -165,7 +175,26 @@ def task_push_data_into_datastore(**context):
     resource_dict = context['params'].get('resource', {})
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
-    return load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url)
+    if LOAD_WITH_POSTGRES_COPY:
+        ti = context['ti']
+        raw_schema = context['params'].get('resource', {}).get('schema', False)
+        if raw_schema and raw_schema != '{}':
+            eval_schema = json.loads(raw_schema)
+            schema = ast.literal_eval(eval_schema)
+        else:
+            xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
+            schema = xcom_result['resource'].get('schema', {})
+        kwargs = {
+            'site_url': ckan_site_url, 
+            'resource_dict': resource_dict,
+            'api_key': ckan_api_key,
+            'schema': schema
+        }
+        delete_index(resource_dict, connection=get_connection())
+        load_csv_to_postgres_via_copy(connection=get_connection(), **kwargs)
+        restore_indexes_and_set_datastore_active(resource_dict, schema, connection=get_connection())
+    else:
+        return load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url)
 
 
 push_data_into_datastore_task = PythonOperator(

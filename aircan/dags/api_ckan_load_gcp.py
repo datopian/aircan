@@ -1,24 +1,19 @@
 import logging
-import time
-import json
 import ast
-from datetime import date, datetime
+from datetime import date
 
 
-# Local imports
-from aircan.dependencies.hybrid_load import delete_datastore_table, create_datastore_table
-from aircan.dependencies.api_load import load_resource_via_api
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.utils.dates import days_ago
 
 from aircan.dependencies.file_conversion.csv_to_json import convert_from_url
 from aircan.dependencies.google_cloud.file_handler import create_file, get_blob
-
-# Third-party library imports
-from airflow import DAG
-from airflow.exceptions import AirflowException
-
-from airflow.models import Variable
-from airflow.operators.python_operator import PythonOperator
-from airflow.utils.dates import days_ago
+from aircan.dependencies.api_loader import (
+    delete_datastore_table, 
+    create_datastore_table, 
+    load_resource_via_api
+)
 
 
 args = {

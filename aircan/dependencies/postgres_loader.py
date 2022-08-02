@@ -5,7 +5,10 @@ import psycopg2
 from urllib.request import urlopen 
 
 from aircan import RequestError, DatabaseError
-from aircan.dependencies.utils import bytes_chunky, aircan_status_update
+from aircan.dependencies.utils import string_chunky, aircan_status_update
+from frictionless import Resource
+from frictionless.plugins.remote import RemoteControl
+
 
 POSTGRES_LOAD_CHUNK = 50000
 
@@ -109,9 +112,10 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
         column_names = ', '.join(['"{0}"'.format(field['name']) for field in fields])
         cur = connection.cursor()
         try:
-            with urlopen(resource_dict['path']) as f:
-                for i, chunk in enumerate(bytes_chunky(f, POSTGRES_LOAD_CHUNK)):
-                    f = io.StringIO(chunk.decode('utf-8'))
+            control = RemoteControl(http_timeout=50)
+            with Resource(path=resource_dict['path'], control=control) as resource:    
+                for i, records in enumerate(string_chunky(resource.text_stream, int(POSTGRES_LOAD_CHUNK))):
+                    f = io.StringIO(records)
                         # Can't use :param for table name because params are only
                         # For filter values that are single quoted.
                     try:

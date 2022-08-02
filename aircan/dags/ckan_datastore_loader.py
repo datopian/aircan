@@ -22,7 +22,7 @@ from aircan.dependencies.postgres_loader import (
     delete_index,
     restore_indexes_and_set_datastore_active
     )
-from aircan.dependencies.utils import get_connection
+from aircan.dependencies.utils import get_connection, to_bool
 from aircan.dependencies.api_loader import (
     fetch_and_read,
     compare_schema,
@@ -110,7 +110,7 @@ def task_check_schema(**context):
         xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
         schema = xcom_result['resource'].get('schema', {}).get('fields', [])
 
-    if APPEND_DATA_WHHEN_SCHEMA_SAME:
+    if to_bool(APPEND_DATA_WHHEN_SCHEMA_SAME):
         is_same_as_old_schema = compare_schema(
             ckan_site_url, ckan_api_key, resource_id, schema
         )
@@ -175,7 +175,7 @@ def task_push_data_into_datastore(**context):
     resource_dict = context['params'].get('resource', {})
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
-    if LOAD_WITH_POSTGRES_COPY:
+    if to_bool(LOAD_WITH_POSTGRES_COPY):
         ti = context['ti']
         raw_schema = context['params'].get('resource', {}).get('schema', False)
         if raw_schema and raw_schema != '{}':

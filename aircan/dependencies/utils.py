@@ -43,17 +43,17 @@ def aircan_status_update(site_url, ckan_api_key, status_dict):
     except Exception as e:
         logging.error('Failed to update status in CKAN. {0}'.format(e))
 
-def bytes_chunky(iterable, n):
+def string_chunky(iterable, n):
     iterable = iter(iterable)
     count = 0
-    group = b''
+    group = ''
     while True:
         try:
             group += next(iterable)
             count += 1
             if count % n == 0:
                 yield group
-                group = b''
+                group = ''
         except StopIteration:
             yield group
             break
@@ -85,3 +85,19 @@ def get_connection():
     logging.info(conn_uri)
     engine = create_engine(conn_uri)
     return engine.raw_connection()
+
+def to_bool(value):
+    valid = {'true': True, 't': True, '1': True,
+             'false': False, 'f': False, '0': False,
+             }   
+    if isinstance(value, bool):
+        return value
+        
+    if not isinstance(value, str):
+        raise ValueError('invalid literal for boolean. Not a string.')
+
+    lower_value = value.lower()
+    if lower_value in valid:
+        return valid[lower_value]
+    else:
+        raise ValueError('invalid literal for boolean: "%s"' % value)

@@ -22,7 +22,7 @@ def fetch_and_read(resource_dict, site_url, api_key):
     """
     logging.info('Fetching resource data from url')
     try:
-        resource = describe(resource_dict['path'], type="resource")
+        resource = describe(path=resource_dict['path'], type="resource")
         status_dict = { 
                 'res_id': resource_dict['ckan_resource_id'],
                 'state': 'progress',

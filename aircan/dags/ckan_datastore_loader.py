@@ -31,7 +31,7 @@ from aircan.dependencies.api_loader import (
     load_resource_via_api
     )
 
-APPEND_DATA_WHHEN_SCHEMA_SAME = Variable.get('APPEND_DATA_WHHEN_SCHEMA_SAME', False)
+APPEND_OR_UPDATE_DATA = Variable.get('APPEND_OR_UPDATE_DATA', False)
 LOAD_WITH_POSTGRES_COPY = Variable.get('LOAD_WITH_POSTGRES_COPY', False)
 
 args = {
@@ -102,6 +102,9 @@ def task_check_schema(**context):
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     raw_schema = context['params'].get('resource', {}).get('schema', False)
+    append_update_in_resource = context['params'].get('resource', {}) \
+                                    .get('datastore_append_or_update', False)
+                                   
     if raw_schema and raw_schema != '{}':
         eval_schema = json.loads(raw_schema)
         eval_schema = ast.literal_eval(eval_schema)
@@ -110,16 +113,16 @@ def task_check_schema(**context):
         xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
         schema = xcom_result['resource'].get('schema', {}).get('fields', [])
 
-    if to_bool(APPEND_DATA_WHHEN_SCHEMA_SAME):
+    if to_bool(APPEND_OR_UPDATE_DATA) or append_update_in_resource:
         is_same_as_old_schema = compare_schema(
             ckan_site_url, ckan_api_key, resource_id, schema
         )
         if is_same_as_old_schema:
             return ['push_data_into_datastore']
         else:
-            return ['create_dastore_table', 'push_data_into_datastore']
+            return ['create_datastore_table', 'push_data_into_datastore']
     else:
-        return ['create_dastore_table', 'push_data_into_datastore']
+        return ['create_datastore_table', 'push_data_into_datastore']
 
 
 check_schema_task = BranchPythonOperator(
@@ -154,7 +157,7 @@ def task_create_datastore_table(**context):
 
 
 create_datastore_table_task = PythonOperator(
-    task_id='create_dastore_table',
+    task_id='create_datastore_table',
     provide_context=True,
     python_callable=task_create_datastore_table,
     dag=dag,
@@ -174,7 +177,7 @@ def task_push_data_into_datastore(**context):
     logging.info('Loading resource via API')
     resource_dict = context['params'].get('resource', {})
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
-    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')                        
     if to_bool(LOAD_WITH_POSTGRES_COPY):
         ti = context['ti']
         raw_schema = context['params'].get('resource', {}).get('schema', False)

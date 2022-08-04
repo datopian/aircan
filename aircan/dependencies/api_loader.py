@@ -163,6 +163,16 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
     try:
         # Push data untill records is empty 
         control = RemoteControl(http_timeout=50)
+        have_unique_keys = resource_dict.get('datastore_unique_keys', False)
+        method = 'insert'
+        if have_unique_keys:
+            method = 'upsert'
+        status_dict = {
+                    'res_id': resource_dict['ckan_resource_id'],
+                    'state': 'progress',
+                    'message': 'Loading data into datastore.'.format(count)
+                }
+        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
         with Resource(resource_dict['path'], control=control) as resource:
             count = 0
             for i, records in enumerate(chunky(resource.row_stream, int(CHUNK))):
@@ -171,7 +181,7 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
                         'resource_id': resource_dict['ckan_resource_id'],
                         'force': True,
                         'records': list(records),
-                        'method': 'insert'
+                        'method': method
                     }
                 logging.info('Saving chunk {number}'.format(number=i))
                 url = urljoin(ckan_site_url, '/api/3/action/datastore_upsert')
@@ -181,12 +191,7 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
                                         'Authorization': ckan_api_key})
                 response.raise_for_status()
                 if response.status_code == 200:
-                    status_dict = {
-                        'res_id': resource_dict['ckan_resource_id'],
-                        'state': 'progress',
-                        'message': 'Pushed {0} entries of records.'.format(count)
-                    }
-                    aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
+                     logging.info('Saved chunk {number}'.format(number=i))
                 else:
                     raise requests.HTTPError('Failed to make request on CKAN API.')
         if count:

@@ -10,7 +10,7 @@ from frictionless import Resource
 from frictionless.plugins.remote import RemoteControl
 from frictionless import describe
 
-from aircan.dependencies.utils import chunky, DatastoreEncoder
+from aircan.dependencies.utils import AirflowCKANException, chunky, DatastoreEncoder
 from aircan import RequestError
 
 CHUNK = Variable.get('DATASTORE_CHUNK_INSERT_ROWS', 250)
@@ -32,14 +32,8 @@ def fetch_and_read(resource_dict, site_url, api_key):
         return {'sucess': True, 'resource': resource}
 
     except Exception as err:
-        status_dict = { 
-                'res_id': resource_dict['ckan_resource_id'],
-                'state': 'error',
-                'message': 'Failed to fetch data file.',
-                'error': str(err)
-            }
-        aircan_status_update(site_url, api_key, status_dict)
-        return {"success": False, "errors": [err]}
+        raise AirflowCKANException(
+             'Failed to fetch data file from {0}.'.format(resource_dict['path']), str(err))
 
 def compare_schema(site_url, ckan_api_key, res_id, schema):
     """
@@ -61,9 +55,9 @@ def compare_schema(site_url, ckan_api_key, res_id, schema):
                 return True
         else:
             return False
-    except Exception as e: 
-        logging.log('Failed to fetch data dictionary for {0}'.format(res_id))
-        return True
+    except Exception as err: 
+        raise AirflowCKANException(
+            'Failed to fetch data dictionary for {0}'.format(res_id), str(err))
 
 def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
     header = {'Authorization': ckan_api_key}
@@ -88,14 +82,8 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
             return {'success': True, 'message': 'Table deleted successfully.'}
         else:
             raise RequestError(response.json()['error'])
-    except Exception as e:
-        status_dict = { 
-                'res_id': data_resource_id,
-                'state': 'error',
-                'message': 'Failed to clean up table.'
-            }
-        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
-        return str(e)
+    except Exception as err:
+        raise AirflowCKANException('Failed to clean up table.', str(err))
 
 def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan_site_url):
     logging.info('Create Datastore Table method starts')
@@ -146,14 +134,8 @@ def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan
             return {'success': True, 'message': 'Table created Successfully.'}
         else:
             raise RequestError(response.json()['error'])
-    except Exception as e:
-        status_dict = { 
-                'res_id': data_resource_id,
-                'state': 'error',
-                'message': 'Failed to create table in database.'
-            }
-        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
-        return str(e)
+    except Exception as err:
+        raise AirflowCKANException('Failed to create table in datastore.', str(err))
 
 def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
     """
@@ -170,7 +152,7 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
         status_dict = {
                     'res_id': resource_dict['ckan_resource_id'],
                     'state': 'progress',
-                    'message': 'Loading data into datastore.'.format(count)
+                    'message': 'Pushing data into datastore.'
                 }
         aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
         with Resource(resource_dict['path'], control=control) as resource:
@@ -207,11 +189,4 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
             return {'success': True}
             
     except Exception as err:
-        status_dict = { 
-            'res_id': resource_dict['ckan_resource_id'],
-            'state': 'error',
-            'message': 'Failed to push data into datastore DB.',
-            'error': str(err)
-        }
-        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
-        raise AirflowFailException("Failed to push the data into CKAN.")
+        raise AirflowCKANException('Failed to push data into datastore DB.', str(err))

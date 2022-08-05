@@ -5,7 +5,7 @@ import psycopg2
 from urllib.request import urlopen 
 
 from aircan import RequestError, DatabaseError
-from aircan.dependencies.utils import string_chunky, aircan_status_update
+from aircan.dependencies.utils import AirflowCKANException, string_chunky, aircan_status_update
 from frictionless import Resource
 from frictionless.plugins.remote import RemoteControl
 
@@ -139,17 +139,17 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                             }
                         
                         aircan_status_update(site_url, api_key, status_dict)
-                    except psycopg2.DataError as e:
+                    except psycopg2.DataError as err:
                         # E is a str but with foreign chars e.g.
                         # 'extra data: "paul,pa\xc3\xbcl"\n'
                         # But logging and exceptions need a normal (7 bit) str
-                        error_str = str(e)
+                        error_str = str(err)
                         logging.warning(error_str)
                         raise DatabaseError('Data Error during COPY command: {error_str}')
-                    except Exception as e:
-                        raise DatabaseError('Generic Error during COPY: {e}')
-        except Exception as e:
-            return str(e)
+                    except Exception as err:
+                        raise DatabaseError('Generic Error during COPY: {0}'.format(err))
+        except Exception as err:
+            raise AirflowCKANException('Failed to push data into postgres DB.', str(err))
         finally:
             cur.close()
     finally:
@@ -159,7 +159,7 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
             'message': 'Successfully pushed entries to "{res_id}"'.format(
                                                 res_id = resource_dict['ckan_resource_id'])
             }
-        
+    
         aircan_status_update(site_url, api_key, status_dict)
         connection.commit()
 

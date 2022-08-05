@@ -4,7 +4,6 @@ This dag reads the CKAN resource files and push data into the CKAN datastore
 via datastore API.
 """
 
-import imp
 import logging
 import json
 import ast
@@ -22,7 +21,7 @@ from aircan.dependencies.postgres_loader import (
     delete_index,
     restore_indexes_and_set_datastore_active
     )
-from aircan.dependencies.utils import get_connection, to_bool
+from aircan.dependencies.utils import get_connection, to_bool, ckan_datstore_loader_failure
 from aircan.dependencies.api_loader import (
     fetch_and_read,
     compare_schema,
@@ -56,7 +55,8 @@ args = {
             'site_url': "URL",
         },
         'output_bucket': str(date.today())
-    }
+    },
+    'on_failure_callback': ckan_datstore_loader_failure,
 }
 
 dag = DAG(

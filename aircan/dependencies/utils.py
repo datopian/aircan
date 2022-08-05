@@ -7,6 +7,7 @@ import requests
 from urllib.parse import urljoin
 
 from airflow.hooks.base_hook import BaseHook
+from airflow.exceptions import AirflowFailException
 from sqlalchemy import create_engine
 
 
@@ -101,3 +102,29 @@ def to_bool(value):
         return valid[lower_value]
     else:
         raise ValueError('invalid literal for boolean: "%s"' % value)
+
+
+class AirflowCKANException(AirflowFailException):
+    def __init__(self, value, err,):
+        super().__init__(value, err)
+        self.value = value
+        self.err = err
+
+    def __str__(self):
+        return self.value
+
+
+def ckan_datstore_loader_failure(context):
+    exception= context.get('exception')
+    resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
+    api_key = context['params'].get('ckan_config', {}).get('api_key')
+    site_url = context['params'].get('ckan_config', {}).get('site_url')    
+    logging.info(exception.err)
+    status_dict = { 
+            'res_id': resource_id,
+            'state': 'error',
+            'message': exception.value,
+            'error': exception.err
+        }
+    aircan_status_update(site_url, api_key, status_dict)
+

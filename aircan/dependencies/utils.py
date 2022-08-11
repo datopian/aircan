@@ -125,9 +125,9 @@ def email_dispatcher(context, api_key, site_url):
     exception = context.get('exception')
 
     try:
-        url = urljoin(site_url, '/api/3/action/package_show')
+        url = urljoin(site_url, '/api/3/action/package_show?id={0}'.format(
+                                                        resource_dict['package_id']))
         response = requests.get(url,
-                        data = json.dumps({'id': resource_dict['package_id']}),
                         headers={'Content-Type': 'application/json',
                                 'Authorization': api_key})
         if response.status_code == 200:
@@ -152,7 +152,7 @@ def email_dispatcher(context, api_key, site_url):
 
             emailer.send_email(
                 to = email_to, 
-                subject= '[Alert] Aircan failed to data into datastore.', 
+                subject= '[Alert] Aircan data ingestion has failed.', 
                 html_content = _compose_error_email_body(
                     site_url,
                     datastore_manage_url,
@@ -171,7 +171,7 @@ def ckan_datstore_loader_failure(context):
     resource_dict = context['params'].get('resource', {})
     api_key = context['params'].get('ckan_config', {}).get('api_key')
     site_url = context['params'].get('ckan_config', {}).get('site_url')    
-    logging.info(exception.err)
+    logging.error(exception.err)
     status_dict = { 
             'res_id': resource_dict.get('ckan_resource_id'),
             'state': 'error',
@@ -188,16 +188,16 @@ def _compose_error_email_body(site_url, datastore_manage_url, exception):
         <html>
         <body>
             <div>
-            <h3>✖ Aircan tasks is failed.</h3>
-            <div >
-            <p>An aircan task is failed to load data into datastore table with following error.</p>
-            <p>
+            <h3>✖ Aircan data ingestion has been failed.</h3>
             <div>
+            <p>An aircan data ingestion has failed with following error.</p>
+            <p>
+            <div style="padding:0px 6px;color:#a94442;background-color:#f2dede;border:2px solid #ebccd1;margin-bottom:20px;">
                 <p><strong>Message:</strong> {error_msg}
                 <p><strong>Upload Error:</strong> {error}
-                <p>
+                <p> 
             </div>
-            <a c href="{datastore_manage_url}">View failed</a></p>
+            <a style="padding:4px 6px;background-color:#206b82;color:#fff;text-decoration:none;" href="{datastore_manage_url}">View failed</a></p>
             <div>
                 <p>--------</p>
                 <div>
@@ -212,5 +212,5 @@ def _compose_error_email_body(site_url, datastore_manage_url, exception):
         datastore_manage_url = datastore_manage_url,
         site_url = urlparse(site_url).netloc,
         error_msg = exception.value,
-        error =exception.err
+        error = exception.err
         )

@@ -110,53 +110,70 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
         api_key = kwargs['api_key']
         fields = schema.get('fields', [])
         column_names = ', '.join(['"{0}"'.format(field['name']) for field in fields])
+        unique_keys = resource_dict.get('datastore_unique_keys', False)
         cur = connection.cursor()
+
+        insert_sql = '''
+            COPY \"{resource_id}\" ({column_names}) 
+            FROM STDIN
+            WITH (DELIMITER '{delimiter}', FORMAT csv, HEADER 1, ENCODING '{encoding}');
+            '''
+
+        upsert_sql = '''
+            CREATE TEMPORARY TABLE \"temp_{resource_id}\" (LIKE \"{resource_id}\") ON COMMIT DROP; 
+            ALTER TABLE \"temp_{resource_id}\" DROP COLUMN _id;
+            
+            COPY \"temp_{resource_id}\" ({column_names}) 
+            FROM STDIN
+            WITH (DELIMITER '{delimiter}', FORMAT csv, HEADER 1, ENCODING '{encoding}');
+
+            INSERT INTO \"{resource_id}\"({column_names})
+            SELECT {column_names} FROM \"temp_{resource_id}\" 
+            ON CONFLICT ({unique_keys}) DO UPDATE SET {update_set};
+            '''
+
         try:
             control = RemoteControl(http_timeout=50)
-            with Resource(path=resource_dict['path'], control=control) as resource:    
-                for i, records in enumerate(string_chunky(resource.text_stream, int(POSTGRES_LOAD_CHUNK))):
-                    f = io.StringIO(records)
-                        # Can't use :param for table name because params are only
-                        # For filter values that are single quoted.
-                    try:
-                        cur.copy_expert(
-                            "COPY \"{resource_id}\" ({column_names}) "
-                            "FROM STDIN "
-                            "WITH (DELIMITER '{delimiter}', FORMAT csv, HEADER 1, "
-                            "      ENCODING '{encoding}');"
-                            .format(
-                                resource_id = resource_dict['ckan_resource_id'],
-                                column_names = column_names,
-                                delimiter = ',',
-                                encoding = 'UTF8',
-                            ),
-                            f)
-                        logging.info('Pushed {count} chunk of records.'.format(count=i+1))
-                        status_dict = {
-                            'res_id': resource_dict['ckan_resource_id'],
-                            'state': 'progress',
-                            'message':'Pushed {count} chunk of records.'.format(count=i+1)
-                            }
-                        
-                        aircan_status_update(site_url, api_key, status_dict)
-                    except psycopg2.DataError as err:
-                        # E is a str but with foreign chars e.g.
-                        # 'extra data: "paul,pa\xc3\xbcl"\n'
-                        # But logging and exceptions need a normal (7 bit) str
-                        error_str = str(err)
-                        logging.warning(error_str)
-                        raise DatabaseError('Data Error during COPY command: {error_str}')
-                    except Exception as err:
-                        raise DatabaseError('Generic Error during COPY: {0}'.format(err))
+            if unique_keys: 
+                sql_str = upsert_sql
+            else:
+                sql_str = insert_sql
+            with Resource(path=resource_dict['path'], control=control) as resource: 
+                logging.info('Data records are being ingested.')
+                status_dict = {
+                    'res_id': resource_dict['ckan_resource_id'],
+                    'state': 'progress',
+                    'message':'Data records are being ingested.'
+                    }
+                aircan_status_update(site_url, api_key, status_dict)
+                try:
+                    cur.copy_expert(sql_str
+                        .format(
+                            resource_id = resource_dict['ckan_resource_id'],
+                            column_names = column_names,
+                            unique_keys = ','.join(unique_keys) if unique_keys else '',
+                            delimiter = ',',
+                            encoding = 'UTF8',
+                            update_set = ','.join(['{0}=EXCLUDED.{0}'.format(field['name']) for field in fields])
+                        ),
+                        resource.text_stream)
+               
+                except psycopg2.DataError as err:
+                    # E is a str but with foreign chars e.g.
+                    # 'extra data: "paul,pa\xc3\xbcl"\n'
+                    # But logging and exceptions need a normal (7 bit) str
+                    raise Exception(str(err))
+                except Exception as err:
+                    raise Exception(str(err))
         except Exception as err:
-            raise AirflowCKANException('Failed to push data into postgres DB.', str(err))
+            raise AirflowCKANException('Data ingestion has failed.', str(err))
         finally:
             cur.close()
     finally:
         status_dict = {
             'res_id': resource_dict['ckan_resource_id'],
             'state': 'complete',
-            'message': 'Successfully pushed entries to "{res_id}"'.format(
+            'message': 'Data ingestion completed successfully for "{res_id}".'.format(
                                                 res_id = resource_dict['ckan_resource_id'])
             }
     

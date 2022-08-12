@@ -197,7 +197,8 @@ def _compose_error_email_body(site_url, datastore_manage_url, exception):
                 <p><strong>Upload Error:</strong> {error}
                 <p> 
             </div>
-            <a style="padding:4px 6px;background-color:#206b82;color:#fff;text-decoration:none;" href="{datastore_manage_url}">View failed</a></p>
+            <a style="padding:4px 6px;background-color:#206b82;color:#fff;text-decoration:none;"
+            href="{datastore_manage_url}">View failed</a></p>
             <div>
                 <p>--------</p>
                 <div>

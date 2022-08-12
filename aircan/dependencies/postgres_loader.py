@@ -157,7 +157,13 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                             update_set = ','.join(['{0}=EXCLUDED.{0}'.format(field['name']) for field in fields])
                         ),
                         resource.text_stream)
-               
+                    status_dict = {
+                        'res_id': resource_dict['ckan_resource_id'],
+                        'state': 'complete',
+                        'message': 'Data ingestion completed successfully for "{res_id}".'.format(
+                                    res_id = resource_dict['ckan_resource_id'])}
+                    aircan_status_update(site_url, api_key, status_dict)
+                                    
                 except psycopg2.DataError as err:
                     # E is a str but with foreign chars e.g.
                     # 'extra data: "paul,pa\xc3\xbcl"\n'
@@ -169,15 +175,8 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
             raise AirflowCKANException('Data ingestion has failed.', str(err))
         finally:
             cur.close()
+
     finally:
-        status_dict = {
-            'res_id': resource_dict['ckan_resource_id'],
-            'state': 'complete',
-            'message': 'Data ingestion completed successfully for "{res_id}".'.format(
-                                                res_id = resource_dict['ckan_resource_id'])
-            }
-    
-        aircan_status_update(site_url, api_key, status_dict)
         connection.commit()
 
     return {'success': True}

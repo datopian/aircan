@@ -151,10 +151,10 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                         .format(
                             resource_id = resource_dict['ckan_resource_id'],
                             column_names = column_names,
-                            unique_keys = ','.join(unique_keys) if unique_keys else '',
+                            unique_keys =  ', '.join('"{0}"'.format(key) for key in unique_keys) if unique_keys else '',
                             delimiter = ',',
                             encoding = 'UTF8',
-                            update_set = ','.join(['{0}=EXCLUDED.{0}'.format(field['name']) for field in fields])
+                            update_set = ','.join(['"{0}"=EXCLUDED."{0}"'.format(field['name']) for field in fields])
                         ),
                         resource.text_stream)
                     status_dict = {

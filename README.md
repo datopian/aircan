@@ -294,8 +294,8 @@ Configure CKAN to automatically load.
   * Access your local Airflow Connections panel at http://localhost:8080/admin/connection/. Create a new connection named `ckan_postgres` with your datastore information.
   * Add `APPEND_OR_UPDATE_DATA=True` airflow env variable to append data in exising datastore table if already exsit. 
   * Add `LOAD_WITH_POSTGRES_COPY=True` airflow env variable to load with postgres copy loader. By default it loads with datastore API. 
-  * Add `DATASTORE_CHUNK_INSERT_ROWS` airflow evn variable to configure number of records to send a request to datastore.
-
+  * Add `DATASTORE_CHUNK_INSERT_ROWS=250` airflow env variable to configure number of records to send a request to datastore. Default 250 rows.
+  * Add `AIRCAN_NOTIFICATION_TO=author, maintainer, editor, someone@gmail.com` airflow env variable with comma separated recipient keyword, to send aircan failure notification.
 ---
 ## Running Tests
 

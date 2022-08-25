@@ -14,6 +14,8 @@ from sqlalchemy import create_engine
 
 
 AIRCAN_NOTIFICATION_TO = Variable.get('AIRCAN_NOTIFICATION_TO', False)
+SENDGRID_MAIL_FROM = Variable.get('SENDGRID_MAIL_FROM', '')
+
 
 def aircan_status_update(site_url, ckan_api_key, status_dict):
     """
@@ -136,6 +138,7 @@ def email_dispatcher(context, api_key, site_url):
             if package_dict['result'] and AIRCAN_NOTIFICATION_TO:
                 author_email = package_dict['result'].get('author_email', None)
                 maintainer_email = package_dict['result'].get('maintainer_email', None)
+                editor_email = resource_dict.get('editor_user_email', None)
                 email_to = []
                 
                 for r in AIRCAN_NOTIFICATION_TO.split(","):
@@ -144,23 +147,25 @@ def email_dispatcher(context, api_key, site_url):
                         email_to.append(author_email)
                     if r == 'maintainer' and maintainer_email:
                         email_to.append(maintainer_email)
-                    if r not in ['author', 'maintainer']:
+                    if r == 'editor' and editor_email:
+                        email_to.append(editor_email)
+                    if r not in ['author', 'maintainer', 'editor']:
                         email_to.append(r)
 
-            datastore_manage_url = urljoin(site_url,'/dataset/{0}/resource_data/{1}' ).format(
+                datastore_manage_url = urljoin(site_url,'/dataset/{0}/resource_data/{1}' ).format(
                     resource_dict['package_id'], resource_dict['ckan_resource_id'])
 
-            emailer.send_email(
-                to = email_to, 
-                subject= '[Alert] Aircan data ingestion has failed.', 
-                html_content = _compose_error_email_body(
-                    site_url,
-                    datastore_manage_url,
-                    exception
-                ), 
-                from_email = 'noreply@data.nationalgrideso.com',
-                sandbox_mode = False
-                )
+                emailer.send_email(
+                    to = list(set(email_to)) , 
+                    subject = '[Alert] Aircan data ingestion has failed.', 
+                    html_content = _compose_error_email_body(
+                        site_url,
+                        datastore_manage_url,
+                        exception
+                    ), 
+                    from_email = SENDGRID_MAIL_FROM,
+                    sandbox_mode = False
+                    )
 
     except Exception as e:
         logging.error(e)

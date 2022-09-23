@@ -14,6 +14,7 @@ from sqlalchemy import create_engine
 
 
 AIRCAN_NOTIFICATION_TO = Variable.get('AIRCAN_NOTIFICATION_TO', False)
+AIRCAN_NOTIFICATION_SUBJECT = Variable.get('AIRCAN_NOTIFICATION_SUBJECT', '[Alert] Data ingestion has failed.')
 SENDGRID_MAIL_FROM = Variable.get('SENDGRID_MAIL_FROM', '')
 
 
@@ -154,18 +155,20 @@ def email_dispatcher(context, api_key, site_url):
 
                 datastore_manage_url = urljoin(site_url,'/dataset/{0}/resource_data/{1}' ).format(
                     resource_dict['package_id'], resource_dict['ckan_resource_id'])
-
-                emailer.send_email(
-                    to = list(set(email_to)) , 
-                    subject = '[Alert] Aircan data ingestion has failed.', 
-                    html_content = _compose_error_email_body(
-                        site_url,
-                        datastore_manage_url,
-                        exception
-                    ), 
-                    from_email = SENDGRID_MAIL_FROM,
-                    sandbox_mode = False
-                    )
+                if email_to:
+                    emailer.send_email(
+                        to = list(set(email_to)) , 
+                        subject = AIRCAN_NOTIFICATION_SUBJECT,
+                        html_content = _compose_error_email_body(
+                            site_url,
+                            datastore_manage_url,
+                            exception
+                        ), 
+                        from_email = SENDGRID_MAIL_FROM,
+                        sandbox_mode = False
+                        )
+                else:
+                    logging.info('No email to send.')
 
     except Exception as e:
         logging.error(e)
@@ -193,24 +196,18 @@ def _compose_error_email_body(site_url, datastore_manage_url, exception):
         <html>
         <body>
             <div>
-            <h3>✖ Aircan data ingestion has been failed.</h3>
+            <h3>✖ Data ingestion has been failed.</h3>
             <div>
-            <p>An aircan data ingestion has failed with following error.</p>
+            <p>Data Ingestion has failed because of the following reason:</p>
             <p>
             <div style="padding:0px 6px;color:#a94442;background-color:#f2dede;border:2px solid #ebccd1;margin-bottom:20px;">
                 <p><strong>Message:</strong> {error_msg}
                 <p><strong>Upload Error:</strong> {error}
                 <p> 
             </div>
-            <a style="padding:4px 6px;background-color:#206b82;color:#fff;text-decoration:none;"
-            href="{datastore_manage_url}">View failed</a></p>
-            <div>
-                <p>--------</p>
-                <div>
-                    Message sent from <a href="{site_url}">{site_url}</br>
-                    This is an automated message, please don't respond to this address.
-                </div>
-            </div>
+            <a  style="padding:8px 10px;background-color:#f26522;border:1px solid #f26522;border-radius:12px;color: #fff;text-decoration:none;"
+            href="{datastore_manage_url}">View error</a></p>
+
         </body>
         </html>
             '''

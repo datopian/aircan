@@ -4,11 +4,18 @@ import json
 import itertools
 import logging
 import requests
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from airflow.hooks.base_hook import BaseHook
+from airflow.providers.sendgrid.utils import emailer
 from airflow.exceptions import AirflowFailException
+from airflow.models import Variable
 from sqlalchemy import create_engine
+
+
+AIRCAN_NOTIFICATION_TO = Variable.get('AIRCAN_NOTIFICATION_TO', False)
+AIRCAN_NOTIFICATION_SUBJECT = Variable.get('AIRCAN_NOTIFICATION_SUBJECT', '[Alert] Data ingestion has failed.')
+SENDGRID_MAIL_FROM = Variable.get('SENDGRID_MAIL_FROM', '')
 
 
 def aircan_status_update(site_url, ckan_api_key, status_dict):
@@ -114,17 +121,99 @@ class AirflowCKANException(AirflowFailException):
         return self.value
 
 
+def email_dispatcher(context, api_key, site_url):
+    resource_dict = context['params'].get('resource', {})
+    api_key = context['params'].get('ckan_config', {}).get('api_key')
+    site_url = context['params'].get('ckan_config', {}).get('site_url')  
+    exception = context.get('exception')
+
+    try:
+        url = urljoin(site_url, '/api/3/action/package_show?id={0}'.format(
+                                                        resource_dict['package_id']))
+        response = requests.get(url,
+                        headers={'Content-Type': 'application/json',
+                                'Authorization': api_key})
+        if response.status_code == 200:
+            package_dict = response.json()
+
+            if package_dict['result'] and AIRCAN_NOTIFICATION_TO:
+                author_email = package_dict['result'].get('author_email', None)
+                maintainer_email = package_dict['result'].get('maintainer_email', None)
+                editor_email = resource_dict.get('editor_user_email', None)
+                email_to = []
+                
+                for r in AIRCAN_NOTIFICATION_TO.split(","):
+                    r = r.strip()
+                    if r == 'author' and author_email:
+                        email_to.append(author_email)
+                    if r == 'maintainer' and maintainer_email:
+                        email_to.append(maintainer_email)
+                    if r == 'editor' and editor_email:
+                        email_to.append(editor_email)
+                    if r not in ['author', 'maintainer', 'editor']:
+                        email_to.append(r)
+
+                datastore_manage_url = urljoin(site_url,'/dataset/{0}/resource_data/{1}' ).format(
+                    resource_dict['package_id'], resource_dict['ckan_resource_id'])
+                if email_to:
+                    emailer.send_email(
+                        to = list(set(email_to)) , 
+                        subject = AIRCAN_NOTIFICATION_SUBJECT,
+                        html_content = _compose_error_email_body(
+                            site_url,
+                            datastore_manage_url,
+                            exception
+                        ), 
+                        from_email = SENDGRID_MAIL_FROM,
+                        sandbox_mode = False
+                        )
+                else:
+                    logging.info('No email to send.')
+
+    except Exception as e:
+        logging.error(e)
+
+
 def ckan_datstore_loader_failure(context):
-    exception= context.get('exception')
-    resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
+    exception = context.get('exception')
+    resource_dict = context['params'].get('resource', {})
     api_key = context['params'].get('ckan_config', {}).get('api_key')
     site_url = context['params'].get('ckan_config', {}).get('site_url')    
-    logging.info(exception.err)
+    logging.error(exception.err)
     status_dict = { 
-            'res_id': resource_id,
+            'res_id': resource_dict.get('ckan_resource_id'),
             'state': 'error',
             'message': exception.value,
             'error': exception.err
         }
     aircan_status_update(site_url, api_key, status_dict)
+    email_dispatcher(context, api_key, site_url)
 
+
+def _compose_error_email_body(site_url, datastore_manage_url, exception):
+    email_html = '''
+        <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+        <html>
+        <body>
+            <div>
+            <h3>✖ Data ingestion has been failed.</h3>
+            <div>
+            <p>Data Ingestion has failed because of the following reason:</p>
+            <p>
+            <div style="padding:0px 6px;color:#a94442;background-color:#f2dede;border:2px solid #ebccd1;margin-bottom:20px;">
+                <p><strong>Message:</strong> {error_msg}
+                <p><strong>Upload Error:</strong> {error}
+                <p> 
+            </div>
+            <a  style="padding:8px 10px;background-color:#f26522;border:1px solid #f26522;border-radius:12px;color: #fff;text-decoration:none;"
+            href="{datastore_manage_url}">View error</a></p>
+
+        </body>
+        </html>
+            '''
+    return email_html.format(
+        datastore_manage_url = datastore_manage_url,
+        site_url = urlparse(site_url).netloc,
+        error_msg = exception.value,
+        error = exception.err
+        )

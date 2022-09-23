@@ -152,7 +152,7 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
         status_dict = {
                     'res_id': resource_dict['ckan_resource_id'],
                     'state': 'progress',
-                    'message': 'Pushing data into datastore.'
+                    'message': 'Data ingestion is in progress.'
                 }
         aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
         with Resource(resource_dict['path'], control=control) as resource:
@@ -165,7 +165,6 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
                         'records': list(records),
                         'method': method
                     }
-                logging.info('Saving chunk {number}'.format(number=i))
                 url = urljoin(ckan_site_url, '/api/3/action/datastore_upsert')
                 response = requests.post(url,
                                 data=json.dumps(payload, cls=DatastoreEncoder),
@@ -173,20 +172,20 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
                                         'Authorization': ckan_api_key})
                 response.raise_for_status()
                 if response.status_code == 200:
-                     logging.info('Saved chunk {number}'.format(number=i))
+                     logging.info('Ingested {number} of records.'.format(number=i))
                 else:
                     raise requests.HTTPError('Failed to make request on CKAN API.')
         if count:
-            logging.info('Successfully pushed {n} entries to "{res_id}".'.format(
+            logging.info('Successfully ingested {n} records of data "{res_id}".'.format(
                     n=count, res_id=resource_dict['ckan_resource_id']))
             status_dict = { 
                     'res_id': resource_dict['ckan_resource_id'],
                     'state': 'complete',
-                    'message': 'Successfully pushed {n} entries to "{res_id}".'.format(
-                    n=count, res_id=resource_dict['ckan_resource_id'])
+                    'message': 'Data ingestion completed successfully for "{res_id}".'.format(
+                     res_id=resource_dict['ckan_resource_id'])
                 }
             aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
             return {'success': True}
             
     except Exception as err:
-        raise AirflowCKANException('Failed to push data into datastore DB.', str(err))
+        raise AirflowCKANException('Data ingestion has failed.', str(err))

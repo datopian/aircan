@@ -30,9 +30,6 @@ from aircan.dependencies.api_loader import (
     load_resource_via_api
     )
 
-APPEND_OR_UPDATE_DATA = Variable.get('APPEND_OR_UPDATE_DATA', False)
-LOAD_WITH_POSTGRES_COPY = Variable.get('LOAD_WITH_POSTGRES_COPY', False)
-
 args = {
     'start_date': days_ago(0),
     'params': { 
@@ -53,6 +50,12 @@ args = {
         'ckan_config': {
             'api_key': 'api_key',
             'site_url': "URL",
+            "ckan_datastore_postgres_url": "postgres://user:password@host:port/dbname",
+            "aircan_notification_subject": "Aircan Notification",
+            "aircan_notification_to": "editor",
+            "aircan_load_with_postgres_copy": False,
+            "aircan_datastore_chunk_insert_rows_size": 250,
+            "aircan_append_or_update_datastore": False,
         },
         'output_bucket': str(date.today())
     },
@@ -101,6 +104,7 @@ def task_check_schema(**context):
     resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
+    append_or_update_datastore = context['params'].get('ckan_config', {}).get('aircan_append_or_update_datastore')
     raw_schema = context['params'].get('resource', {}).get('schema', False)
     append_update_in_resource = context['params'].get('resource', {}) \
                                     .get('datastore_append_or_update', False)
@@ -113,7 +117,7 @@ def task_check_schema(**context):
         xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
         schema = xcom_result['resource'].get('schema', {}).get('fields', [])
 
-    if to_bool(APPEND_OR_UPDATE_DATA) or append_update_in_resource:
+    if to_bool(append_or_update_datastore) or append_update_in_resource:
         is_same_as_old_schema = compare_schema(
             ckan_site_url, ckan_api_key, resource_id, schema
         )
@@ -177,8 +181,12 @@ def task_push_data_into_datastore(**context):
     logging.info('Loading resource via API')
     resource_dict = context['params'].get('resource', {})
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
-    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')                        
-    if to_bool(LOAD_WITH_POSTGRES_COPY):
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
+    datastore_postgres_url = context['params'].get('ckan_config', {}).get('ckan_datastore_postgres_url')
+    load_with_postgres_copy = context['params'].get('ckan_config', {}).get('aircan_load_with_postgres_copy') 
+    chunk_size = context['params'].get('ckan_config', {}).get('aircan_datastore_chunk_insert_rows_size') 
+
+    if to_bool(load_with_postgres_copy):
         ti = context['ti']
         raw_schema = context['params'].get('resource', {}).get('schema', False)
         if raw_schema and raw_schema != '{}':
@@ -193,11 +201,11 @@ def task_push_data_into_datastore(**context):
             'api_key': ckan_api_key,
             'schema': schema
         }
-        delete_index(resource_dict, connection=get_connection())
-        load_csv_to_postgres_via_copy(connection=get_connection(), **kwargs)
-        restore_indexes_and_set_datastore_active(resource_dict, schema, connection=get_connection())
+        delete_index(resource_dict, connection=get_connection(datastore_postgres_url))
+        load_csv_to_postgres_via_copy(connection=get_connection(datastore_postgres_url), **kwargs)
+        restore_indexes_and_set_datastore_active(resource_dict, schema, connection=get_connection(datastore_postgres_url))
     else:
-        return load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url)
+        return load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size)
 
 
 push_data_into_datastore_task = PythonOperator(

@@ -13,8 +13,6 @@ from frictionless import describe
 from aircan.dependencies.utils import AirflowCKANException, chunky, DatastoreEncoder
 from aircan import RequestError
 
-CHUNK = Variable.get('DATASTORE_CHUNK_INSERT_ROWS', 250)
-
 def fetch_and_read(resource_dict, site_url, api_key):
     """
     Fetch and read source type, metadata and schema from
@@ -137,7 +135,7 @@ def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan
     except Exception as err:
         raise AirflowCKANException('Failed to create table in datastore.', str(err))
 
-def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
+def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size):
     """
     Push records in CKAN datastore
     """
@@ -157,7 +155,7 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
         aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
         with Resource(resource_dict['path'], control=control) as resource:
             count = 0
-            for i, records in enumerate(chunky(resource.row_stream, int(CHUNK))):
+            for i, records in enumerate(chunky(resource.row_stream, int(chunk_size))):
                 count += len(records)
                 payload = {
                         'resource_id': resource_dict['ckan_resource_id'],

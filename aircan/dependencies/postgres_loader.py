@@ -10,8 +10,6 @@ from frictionless import Resource
 from frictionless.plugins.remote import RemoteControl
 
 
-POSTGRES_LOAD_CHUNK = 50000
-
 def delete_index(data_resource, connection=None):
     sql_drop_index = u'DROP INDEX "{0}" CASCADE'
     sql_get_index_string = """

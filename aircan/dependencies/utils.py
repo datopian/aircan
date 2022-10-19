@@ -12,12 +12,6 @@ from airflow.exceptions import AirflowFailException
 from airflow.models import Variable
 from sqlalchemy import create_engine
 
-
-AIRCAN_NOTIFICATION_TO = Variable.get('AIRCAN_NOTIFICATION_TO', False)
-AIRCAN_NOTIFICATION_SUBJECT = Variable.get('AIRCAN_NOTIFICATION_SUBJECT', '[Alert] Data ingestion has failed.')
-SENDGRID_MAIL_FROM = Variable.get('SENDGRID_MAIL_FROM', '')
-
-
 def aircan_status_update(site_url, ckan_api_key, status_dict):
     """
     Update aircan run status like pending, error, process, complete 
@@ -87,11 +81,8 @@ class DatastoreEncoder(json.JSONEncoder):
 
         return json.JSONEncoder.default(self, obj)
 
-def get_connection():
-    connection = BaseHook.get_connection('ckan_postgres')
-    conn_uri = connection.get_uri()
-    logging.info(conn_uri)
-    engine = create_engine(conn_uri)
+def get_connection(url):
+    engine = create_engine(url)
     return engine.raw_connection()
 
 def to_bool(value):
@@ -124,7 +115,10 @@ class AirflowCKANException(AirflowFailException):
 def email_dispatcher(context, api_key, site_url):
     resource_dict = context['params'].get('resource', {})
     api_key = context['params'].get('ckan_config', {}).get('api_key')
-    site_url = context['params'].get('ckan_config', {}).get('site_url')  
+    site_url = context['params'].get('ckan_config', {}).get('site_url')
+    notification_subject = context['params'].get('ckan_config', {}).get('aircan_notification_subject')
+    notificaton_from = context['params'].get('ckan_config', {}).get('aircan_notificaton_from')   
+    notification_to = context['params'].get('ckan_config', {}).get('aircan_notification_to')   
     exception = context.get('exception')
 
     try:
@@ -136,13 +130,13 @@ def email_dispatcher(context, api_key, site_url):
         if response.status_code == 200:
             package_dict = response.json()
 
-            if package_dict['result'] and AIRCAN_NOTIFICATION_TO:
+            if package_dict['result'] and notification_to:
                 author_email = package_dict['result'].get('author_email', None)
                 maintainer_email = package_dict['result'].get('maintainer_email', None)
                 editor_email = resource_dict.get('editor_user_email', None)
                 email_to = []
                 
-                for r in AIRCAN_NOTIFICATION_TO.split(","):
+                for r in notification_to.split(","):
                     r = r.strip()
                     if r == 'author' and author_email:
                         email_to.append(author_email)
@@ -158,13 +152,13 @@ def email_dispatcher(context, api_key, site_url):
                 if email_to:
                     emailer.send_email(
                         to = list(set(email_to)) , 
-                        subject = AIRCAN_NOTIFICATION_SUBJECT,
+                        subject = notification_subject,
                         html_content = _compose_error_email_body(
                             site_url,
                             datastore_manage_url,
                             exception
                         ), 
-                        from_email = SENDGRID_MAIL_FROM,
+                        from_email = notificaton_from,
                         sandbox_mode = False
                         )
                 else:

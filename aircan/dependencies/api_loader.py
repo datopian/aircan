@@ -13,8 +13,6 @@ from frictionless import describe
 from aircan.dependencies.utils import AirflowCKANException, chunky, DatastoreEncoder
 from aircan import RequestError
 
-CHUNK = Variable.get('DATASTORE_CHUNK_INSERT_ROWS', 250)
-
 def fetch_and_read(resource_dict, site_url, api_key):
     """
     Fetch and read source type, metadata and schema from
@@ -42,19 +40,24 @@ def compare_schema(site_url, ckan_api_key, res_id, schema):
     """
     logging.info('fetching old data dictionary {0}'.format(res_id))
     try:
-        url = urljoin(site_url, '/api/3/action/datastore_info')
-        response = requests.post(url,
-                        data=json.dumps({'id': res_id }),
-                        headers={'Content-Type': 'application/json',
-                                'Authorization': ckan_api_key})
+        url = urljoin(site_url, '/api/3/action/datastore_search')
+        response = requests.get(url,
+                        params={'resource_id': res_id, 'limit':0 },
+                        headers={'Authorization': ckan_api_key}
+                    )
         if response.status_code == 200:
             resource_json = response.json()
-            old_schema = resource_json['result']['schema'].keys()
+            old_schema_dict = resource_json['result'].get('fields', [])
+            old_schema = [fields['id'] for fields in old_schema_dict]
+            if '_id' in old_schema:
+                old_schema.remove('_id')
             new_schema = [field_name['name'] for field_name in schema]
             if set(old_schema) == set(new_schema):
-                return True
+                return [True, old_schema_dict]
+            else:
+                return [False, None]
         else:
-            return False
+            return [False, None]
     except Exception as err: 
         raise AirflowCKANException(
             'Failed to fetch data dictionary for {0}'.format(res_id), str(err))
@@ -85,7 +88,7 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
     except Exception as err:
         raise AirflowCKANException('Failed to clean up table.', str(err))
 
-def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan_site_url):
+def create_datastore_table(data_resource_id, resource_schema, old_schema, ckan_api_key, ckan_site_url):
     logging.info('Create Datastore Table method starts')
     # schema field type to postgres field type mapping  
     DATASTORE_TYPE_MAPPING = {
@@ -105,16 +108,24 @@ def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan
       'geojson': 'jsonb',
       'any': 'text'
     }
-
+    
+    schema = []
+    for f in resource_schema:
+        field = {
+            'id': f['name'],
+            'type': DATASTORE_TYPE_MAPPING.get(f['type'], 'text')
+        }
+        # Preserve old data dictionary if it exists for matching fields
+        if old_schema:
+            old_data_dictionary = [item for item in old_schema if f['name'] == item['id']][0].get('info', False)
+            if old_data_dictionary:
+                field['info'] = old_data_dictionary
+        schema.append(field)
+    
     data_dict = dict(
         # resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
         resource_id=data_resource_id,
-        fields=[
-            {
-                'id': f['name'],
-                'type': DATASTORE_TYPE_MAPPING.get(f['type'], 'text'),
-            } for f in resource_schema],
-        )
+        fields=schema)
     data_dict['records'] = None  # just create an empty table
     data_dict['force'] = True
     try:
@@ -137,7 +148,7 @@ def create_datastore_table(data_resource_id, resource_schema, ckan_api_key, ckan
     except Exception as err:
         raise AirflowCKANException('Failed to create table in datastore.', str(err))
 
-def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
+def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size):
     """
     Push records in CKAN datastore
     """
@@ -157,7 +168,7 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url):
         aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
         with Resource(resource_dict['path'], control=control) as resource:
             count = 0
-            for i, records in enumerate(chunky(resource.row_stream, int(CHUNK))):
+            for i, records in enumerate(chunky(resource.row_stream, int(chunk_size))):
                 count += len(records)
                 payload = {
                         'resource_id': resource_dict['ckan_resource_id'],

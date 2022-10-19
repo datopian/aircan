@@ -117,10 +117,14 @@ def task_check_schema(**context):
         xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
         schema = xcom_result['resource'].get('schema', {}).get('fields', [])
 
-    if to_bool(append_or_update_datastore) or append_update_in_resource:
-        is_same_as_old_schema = compare_schema(
+    [is_same_as_old_schema, old_schema] = compare_schema(
             ckan_site_url, ckan_api_key, resource_id, schema
         )
+
+    # save old schema to xcom for later process
+    ti.xcom_push(key='old_schema', value=old_schema)
+
+    if to_bool(append_or_update_datastore) or append_update_in_resource:
         if is_same_as_old_schema:
             return ['push_data_into_datastore']
         else:
@@ -153,11 +157,12 @@ def task_create_datastore_table(**context):
     resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
+    old_schema = ti.xcom_pull(task_ids='check_schema', key='old_schema')
     xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
     schema = xcom_result['resource'].get('schema', {}).get('fields', [])
     logging.info('Invoking Delete Datastore')
     delete_datastore_table(resource_id, ckan_api_key, ckan_site_url)
-    create_datastore_table(resource_id, schema, ckan_api_key, ckan_site_url)
+    create_datastore_table(resource_id, schema, old_schema, ckan_api_key, ckan_site_url)
 
 
 create_datastore_table_task = PythonOperator(

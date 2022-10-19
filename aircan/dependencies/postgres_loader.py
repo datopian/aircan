@@ -3,6 +3,7 @@ import hashlib
 import logging
 import psycopg2
 from urllib.request import urlopen 
+import pandas as pd
 
 from aircan import RequestError, DatabaseError
 from aircan.dependencies.utils import AirflowCKANException, string_chunky, aircan_status_update
@@ -147,6 +148,10 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                     }
                 aircan_status_update(site_url, api_key, status_dict)
                 try:
+                    df = pd.read_csv(resource.text_stream, converters={'column_name': str})
+                    buffer_data = io.StringIO()
+                    df.to_csv(buffer_data, index=False)
+                    buffer_data.seek(0)
                     cur.copy_expert(sql_str
                         .format(
                             resource_id = resource_dict['ckan_resource_id'],
@@ -156,7 +161,7 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                             encoding = 'UTF8',
                             update_set = ','.join(['"{0}"=EXCLUDED."{0}"'.format(field['name']) for field in fields])
                         ),
-                        resource.text_stream)
+                        buffer_data)
                     status_dict = {
                         'res_id': resource_dict['ckan_resource_id'],
                         'state': 'complete',

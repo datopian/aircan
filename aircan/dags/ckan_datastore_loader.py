@@ -8,7 +8,7 @@ import logging
 import json
 import ast
 from textwrap import dedent
-from datetime import date
+from datetime import date, timedelta
 
 from airflow import DAG
 from airflow.models import Variable
@@ -65,6 +65,7 @@ dag = DAG(
     dag_id='ckan_datastore_loader',
     default_args=args,
     schedule_interval=None,
+    dagrun_timeout=timedelta(minutes=20),
     description='CKAN Datastore data loader',
     tags=['CKAN Datastore loader'],
     doc_md=__doc__,

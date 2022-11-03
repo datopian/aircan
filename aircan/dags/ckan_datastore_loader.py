@@ -13,7 +13,6 @@ from datetime import date
 from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.utils.dates import days_ago
 from airflow.models import Variable
 
 from aircan.dependencies.postgres_loader import (
@@ -21,7 +20,7 @@ from aircan.dependencies.postgres_loader import (
     delete_index,
     restore_indexes_and_set_datastore_active
     )
-from aircan.dependencies.utils import get_connection, to_bool, ckan_datstore_loader_failure
+from aircan.dependencies.utils import days_ago, get_connection, to_bool, ckan_datstore_loader_failure
 from aircan.dependencies.api_loader import (
     fetch_and_read,
     compare_schema,

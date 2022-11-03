@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime, time, timedelta
 import decimal
 import json
 import itertools
@@ -11,6 +11,13 @@ from airflow.providers.sendgrid.utils import emailer
 from airflow.exceptions import AirflowFailException
 from airflow.models import Variable
 from sqlalchemy import create_engine
+from airflow.utils import timezone
+
+def days_ago(n, hour=0, minute=0, second=0, microsecond=0):
+    return datetime.combine(
+        datetime.now(timezone.TIMEZONE) - timedelta(days=n),
+        time(hour, minute, second, microsecond, tzinfo=timezone.TIMEZONE),
+    )
 
 def aircan_status_update(site_url, ckan_api_key, status_dict):
     """
@@ -22,7 +29,7 @@ def aircan_status_update(site_url, ckan_api_key, status_dict):
         request_data = { 
             'resource_id': status_dict.get('res_id', ''),
             'state': status_dict.get('state', ''),
-            'last_updated': str(datetime.datetime.utcnow()),
+            'last_updated': str(datetime.utcnow()),
             'message': status_dict.get('message', ''),
         }
 
@@ -74,7 +81,7 @@ def chunky(iterable, n):
 
 class DatastoreEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, datetime.datetime):
+        if isinstance(obj, datetime):
             return obj.isoformat()
         if isinstance(obj, decimal.Decimal):
             return str(obj)

@@ -37,27 +37,46 @@ def compare_schema(site_url, ckan_api_key, res_id, schema):
     """
     compare old datastore schema with new schema to know wheather 
     it changed or not.
+    retrun type: list
+    reutrn value: [recreate_datastore_table_flag, old_schema]
     """
     logging.info('fetching old data dictionary {0}'.format(res_id))
     try:
         url = urljoin(site_url, '/api/3/action/datastore_search')
         response = requests.get(url,
-                        params={'resource_id': res_id, 'limit':0 },
+                        params={'resource_id': res_id, 'limit': 0},
                         headers={'Authorization': ckan_api_key}
                     )
         if response.status_code == 200:
             resource_json = response.json()
             old_schema_dict = resource_json['result'].get('fields', [])
-            old_schema = [fields['id'] for fields in old_schema_dict]
-            if '_id' in old_schema:
-                old_schema.remove('_id')
-            new_schema = [field_name['name'] for field_name in schema]
-            if set(old_schema) == set(new_schema):
-                return [True, old_schema_dict]
+            
+            # filter old and new schema and compare them if they are identical
+            old_schema_columns = [fields['id'] for fields in old_schema_dict if fields['type'] != '_id']
+            new_schema_columns = [field_name['name'] for field_name in schema]
+            have_same_columns = set(old_schema_columns) == set(new_schema_columns)
+
+            if have_same_columns:
+                # override schema type with user defined type from data dictionary or old schema
+                type_has_changed = False
+
+                for field in schema:
+                    for idx, old_type in enumerate(old_schema_dict):
+                        # if field name is the same and type is different then override it
+                        if field['name'] == old_type['id'] and field.get('info', {}).get('type', False) != old_type['type']:
+                            old_schema_dict[idx]['type'] = field.get('info', {})['type']
+                            type_has_changed = True
+
+                if type_has_changed:
+                    #  have same columns but column type is changed so recreate table with overriding schemas
+                    return [True, old_schema_dict]
+                else:
+                    # Both columns and types are same so no need to recreate table
+                    return [False, old_schema_dict]
             else:
-                return [False, None]
+                return [True, None]
         else:
-            return [False, None]
+            return [True, None]
     except Exception as err: 
         raise AirflowCKANException(
             'Failed to fetch data dictionary for {0}'.format(res_id), str(err))
@@ -110,16 +129,19 @@ def create_datastore_table(data_resource_id, resource_schema, old_schema, ckan_a
     }
     
     schema = []
+
     for f in resource_schema:
         field = {
             'id': f['name'],
             'type': DATASTORE_TYPE_MAPPING.get(f['type'], 'text')
         }
+
         # Preserve old data dictionary if it exists for matching fields
         if old_schema:
             old_data_dictionary = [item for item in old_schema if f['name'] == item['id']][0].get('info', False)
             if old_data_dictionary:
                 field['info'] = old_data_dictionary
+                field['type'] = old_data_dictionary.get('type', field['type'])
         schema.append(field)
     
     data_dict = dict(

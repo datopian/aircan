@@ -113,7 +113,7 @@ class AirflowCKANException(AirflowFailException):
     def __init__(self, value, err,):
         super().__init__(value, err)
         self.value = value
-        self.err = err
+        self.err = err or ''
 
     def __str__(self):
         return self.value

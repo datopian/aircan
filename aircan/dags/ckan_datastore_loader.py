@@ -117,21 +117,27 @@ def task_check_schema(**context):
         xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
         schema = xcom_result['resource'].get('schema', {}).get('fields', [])
 
-    [is_same_as_old_schema, old_schema] = compare_schema(
+    [create_new_datastore_table, old_schema] = compare_schema(
             ckan_site_url, ckan_api_key, resource_id, schema
         )
 
     # save old schema to xcom for later process
     ti.xcom_push(key='old_schema', value=old_schema)
 
-    if to_bool(append_or_update_datastore) or append_update_in_resource:
-        if is_same_as_old_schema:
-            return ['push_data_into_datastore']
-        else:
-            return ['create_datastore_table', 'push_data_into_datastore']
+    append_enabled = to_bool(append_or_update_datastore) or append_update_in_resource
+
+
+    if append_enabled and not create_new_datastore_table:
+        raise Exception('Append or update datastore is set to true but schema has changed, You will lose previous records.\
+        Please set append_or_update_datastore to false or change the schema back to original.')
+    
+    if create_new_datastore_table:
+        return ['create_datastore_table', 'push_data_into_datastore']
+    elif append_enabled:
+        return 'push_data_into_datastore'
     else:
         return ['create_datastore_table', 'push_data_into_datastore']
-
+        
 
 check_schema_task = BranchPythonOperator(
     task_id="check_schema",

@@ -10,7 +10,13 @@ from frictionless import Resource
 from frictionless.plugins.remote import RemoteControl
 from frictionless import describe
 
-from aircan.dependencies.utils import AirflowCKANException, chunky, DatastoreEncoder
+from aircan.dependencies.utils import (
+    AirflowCKANException, 
+    frictionless_to_ckan_schema,
+    ckan_to_frictionless_schema,
+    chunky,
+    DatastoreEncoder)
+
 from aircan import RequestError
 
 def fetch_and_read(resource_dict, site_url, api_key):
@@ -33,13 +39,15 @@ def fetch_and_read(resource_dict, site_url, api_key):
         raise AirflowCKANException(
              'Failed to fetch data file from {0}.'.format(resource_dict['path']), str(err))
 
-def compare_schema(site_url, ckan_api_key, res_id, schema):
+def compare_schema(site_url, ckan_api_key, res_dict, schema):
     """
     compare old datastore schema with new schema to know wheather 
     it changed or not.
     retrun type: list
     reutrn value: [recreate_datastore_table_flag, old_schema]
     """
+
+    res_id = res_dict['ckan_resource_id']
     logging.info('fetching old data dictionary {0}'.format(res_id))
     try:
         url = urljoin(site_url, '/api/3/action/datastore_search')
@@ -52,22 +60,27 @@ def compare_schema(site_url, ckan_api_key, res_id, schema):
             old_schema_dict = resource_json['result'].get('fields', [])
             
             # filter old and new schema and compare them if they are identical
-            old_schema_columns = [fields['id'] for fields in old_schema_dict if fields['type'] != '_id']
+            old_schema_columns = [fields['id'] for fields in old_schema_dict if fields['id'] != '_id']
             new_schema_columns = [field_name['name'] for field_name in schema]
             have_same_columns = set(old_schema_columns) == set(new_schema_columns)
 
             if have_same_columns:
                 # override schema type with user defined type from data dictionary or old schema
                 type_has_changed = False
-
                 for field in schema:
-                    for idx, old_type in enumerate(old_schema_dict):
+                    for idx, old_field in enumerate(old_schema_dict):
                         # if field name is the same and type is different then override it
-                        if field['name'] == old_type['id'] and field.get('info', {}).get('type', False) != old_type['type']:
-                            old_schema_dict[idx]['type'] = field.get('info', {})['type']
-                            type_has_changed = True
-
-                if type_has_changed:
+                        if old_field.get('info', {}).get('type', False):
+                            if field['name'] == old_field['id'] and field['type'] != old_field.get('info', {}).get('type', False):
+                                logging.info('type has changed for field {0},'.format(field['name']))
+                                old_schema_dict[idx]['type'] = old_field.get('info', {}).get('type', field['type'])
+                                type_has_changed = True
+                            
+                # if type has changed for append enabled resource there is chance of previous data being deleted
+                # so throw an error
+                if res_dict['datastore_append_enabled'] and type_has_changed:
+                    raise AirflowCKANException('You cannot change type of existing fields in append enabled resource.')
+                elif type_has_changed:
                     #  have same columns but column type is changed so recreate table with overriding schemas
                     return [True, old_schema_dict]
                 else:
@@ -77,6 +90,9 @@ def compare_schema(site_url, ckan_api_key, res_id, schema):
                 return [True, None]
         else:
             return [True, None]
+
+    except AirflowCKANException as err:
+        raise err
     except Exception as err: 
         raise AirflowCKANException(
             'Failed to fetch data dictionary for {0}'.format(res_id), str(err))
@@ -109,31 +125,13 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
 
 def create_datastore_table(data_resource_id, resource_schema, old_schema, ckan_api_key, ckan_site_url):
     logging.info('Create Datastore Table method starts')
-    # schema field type to postgres field type mapping  
-    DATASTORE_TYPE_MAPPING = {
-      'integer': 'integer',
-      'number': 'numeric',
-      'datetime': 'timestamp', 
-      'date': 'date',
-      'time': 'time', 
-      'string': 'text',
-      'duration': 'interval',
-      'boolean': 'boolean',
-      'object': 'jsonb',
-      'array': 'array',
-      'year': 'text',
-      'yearmonth': 'text',
-      'geopoint': 'text',
-      'geojson': 'jsonb',
-      'any': 'text'
-    }
-    
+   
     schema = []
 
     for f in resource_schema:
         field = {
             'id': f['name'],
-            'type': DATASTORE_TYPE_MAPPING.get(f['type'], 'text')
+            'type':  frictionless_to_ckan_schema(f['type'])
         }
 
         # Preserve old data dictionary if it exists for matching fields
@@ -141,7 +139,7 @@ def create_datastore_table(data_resource_id, resource_schema, old_schema, ckan_a
             old_data_dictionary = [item for item in old_schema if f['name'] == item['id']][0].get('info', False)
             if old_data_dictionary:
                 field['info'] = old_data_dictionary
-                field['type'] = old_data_dictionary.get('type', field['type'])
+                field['type'] = frictionless_to_ckan_schema.get(old_data_dictionary.get('type', field['type']))
         schema.append(field)
     
     data_dict = dict(

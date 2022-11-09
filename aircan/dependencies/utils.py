@@ -13,6 +13,52 @@ from airflow.models import Variable
 from sqlalchemy import create_engine
 from airflow.utils import timezone
 
+
+def frictionless_to_ckan_schema(field_type):
+    '''
+    Convert frictionless schema to ckan schema
+    '''
+    mapper = {
+        'integer': 'integer',
+        'number': 'numeric',
+        'datetime': 'timestamp', 
+        'timestamptz':'timestamptz',
+        'date': 'date',
+        'time': 'time', 
+        'string': 'text',
+        'duration': 'interval',
+        'boolean': 'boolean',
+        'object': 'jsonb',
+        'array': 'array',
+        'year': 'text',
+        'yearmonth': 'text',
+        'geopoint': 'text',
+        'geojson': 'jsonb',
+        'any': 'text'
+        }
+    return mapper.get(field_type, 'text')
+
+def ckan_to_frictionless_schema(field_type):
+    '''
+    Convert ckan schema to frictionless schema
+    '''
+    mapper = {
+        'integer': 'integer',
+        'numeric': 'number',
+        'timestamp': 'datetime', 
+        'timestamptz':'timestamptz',
+        'date': 'date',
+        'time': 'time', 
+        'text': 'string',
+        'interval': 'duration',
+        'boolean': 'boolean',
+        'jsonb': 'object',
+        'array': 'array',
+        }
+
+    return mapper.get(field_type, 'text')
+
+
 def days_ago(n, hour=0, minute=0, second=0, microsecond=0):
     return datetime.combine(
         datetime.now(timezone.TIMEZONE) - timedelta(days=n),
@@ -110,10 +156,10 @@ def to_bool(value):
 
 
 class AirflowCKANException(AirflowFailException):
-    def __init__(self, value, err,):
+    def __init__(self, value, err=None):
         super().__init__(value, err)
         self.value = value
-        self.err = err or ''
+        self.err = err
 
     def __str__(self):
         return self.value
@@ -180,12 +226,12 @@ def ckan_datstore_loader_failure(context):
     resource_dict = context['params'].get('resource', {})
     api_key = context['params'].get('ckan_config', {}).get('api_key')
     site_url = context['params'].get('ckan_config', {}).get('site_url')    
-    logging.error(exception.err)
+    logging.error(exception.err or exception.value)
     status_dict = { 
             'res_id': resource_dict.get('ckan_resource_id'),
             'state': 'error',
             'message': exception.value,
-            'error': exception.err
+            'error': exception.err or exception.value
         }
     aircan_status_update(site_url, api_key, status_dict)
     email_dispatcher(context, api_key, site_url)

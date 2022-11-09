@@ -15,12 +15,17 @@ from airflow.models import Variable
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.models import Variable
 
+from aircan.dependencies.utils import AirflowCKANException
 from aircan.dependencies.postgres_loader import (
     load_csv_to_postgres_via_copy,
     delete_index,
     restore_indexes_and_set_datastore_active
     )
-from aircan.dependencies.utils import days_ago, get_connection, to_bool, ckan_datstore_loader_failure
+
+from aircan.dependencies.utils import (
+    days_ago, get_connection, 
+    to_bool, ckan_datstore_loader_failure)
+    
 from aircan.dependencies.api_loader import (
     fetch_and_read,
     compare_schema,
@@ -101,13 +106,13 @@ fetch_and_read_data_task = PythonOperator(
 # [START check_schema_task]
 def task_check_schema(**context):
     ti = context['ti']
-    resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
+    resource_dict = context['params'].get('resource', {})
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
-    append_or_update_datastore = context['params'].get('ckan_config', {}).get('aircan_append_or_update_datastore')
     raw_schema = context['params'].get('resource', {}).get('schema', False)
-    append_update_in_resource = context['params'].get('resource', {}) \
-                                    .get('datastore_append_or_update', False)
+    global_append_datastore = context['params'].get('ckan_config', {}).get('aircan_append_or_update_datastore')
+    resource_dict['datastore_append_enabled'] = context['params'].get('resource', {}) \
+                    .get('datastore_append_or_update', global_append_datastore )
                                    
     if raw_schema and raw_schema != '{}':
         eval_schema = json.loads(raw_schema)
@@ -117,23 +122,17 @@ def task_check_schema(**context):
         xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
         schema = xcom_result['resource'].get('schema', {}).get('fields', [])
 
+
     [create_new_datastore_table, old_schema] = compare_schema(
-            ckan_site_url, ckan_api_key, resource_id, schema
+            ckan_site_url, ckan_api_key, resource_dict, schema
         )
 
     # save old schema to xcom for later process
     ti.xcom_push(key='old_schema', value=old_schema)
 
-    append_enabled = to_bool(append_or_update_datastore) or append_update_in_resource
-
-
-    if append_enabled and not create_new_datastore_table:
-        raise Exception('Append or update datastore is set to true but schema has changed, You will lose previous records.\
-        Please set append_or_update_datastore to false or change the schema back to original.')
-    
     if create_new_datastore_table:
         return ['create_datastore_table', 'push_data_into_datastore']
-    elif append_enabled:
+    elif resource_dict['datastore_append_enabled']:
         return 'push_data_into_datastore'
     else:
         return ['create_datastore_table', 'push_data_into_datastore']

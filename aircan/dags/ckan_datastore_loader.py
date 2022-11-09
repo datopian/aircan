@@ -11,11 +11,9 @@ from textwrap import dedent
 from datetime import date, timedelta
 
 from airflow import DAG
-from airflow.models import Variable
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.models import Variable
 
-from aircan.dependencies.utils import AirflowCKANException
 from aircan.dependencies.postgres_loader import (
     load_csv_to_postgres_via_copy,
     delete_index,

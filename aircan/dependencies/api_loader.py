@@ -67,15 +67,14 @@ def compare_schema(site_url, ckan_api_key, res_dict, schema):
             if have_same_columns:
                 # override schema type with user defined type from data dictionary or old schema
                 type_has_changed = False
-                for field in schema:
-                    for idx, old_field in enumerate(old_schema_dict):
-                        # if field name is the same and type is different then override it
-                        if old_field.get('info', {}).get('type', False):
-                            if field['name'] == old_field['id'] and field['type'] != old_field.get('info', {}).get('type', False):
-                                logging.info('type has changed for field {0},'.format(field['name']))
-                                old_schema_dict[idx]['type'] = old_field.get('info', {}).get('type', field['type'])
-                                type_has_changed = True
-                            
+                for idx, old_field in enumerate(old_schema_dict):
+                    # if field name is the same and type is different then override it
+                    if old_field.get('info', {}).get('type', False):
+                        if ckan_to_frictionless_schema(old_field['type']) != old_field.get('info', {}).get('type', False):
+                            logging.info('type has changed for field {0},'.format(old_field['id']))
+                            old_schema_dict[idx]['type'] = old_field.get('info', {}).get('type', old_field['type'])
+                            type_has_changed = True
+                        
                 # if type has changed for append enabled resource there is chance of previous data being deleted
                 # so throw an error
                 if res_dict['datastore_append_enabled'] and type_has_changed:
@@ -139,7 +138,7 @@ def create_datastore_table(data_resource_id, resource_schema, old_schema, ckan_a
             old_data_dictionary = [item for item in old_schema if f['name'] == item['id']][0].get('info', False)
             if old_data_dictionary:
                 field['info'] = old_data_dictionary
-                field['type'] = frictionless_to_ckan_schema.get(old_data_dictionary.get('type', field['type']))
+                field['type'] = frictionless_to_ckan_schema(old_data_dictionary.get('type', field['type']))
         schema.append(field)
     
     data_dict = dict(

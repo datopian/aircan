@@ -160,12 +160,15 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                             update_set = ','.join(['"{0}"=EXCLUDED."{0}"'.format(field['name']) for field in fields])
                         ),
                         buffer_data)
-                    status_dict = {
-                        'res_id': resource_dict['ckan_resource_id'],
-                        'state': 'complete',
-                        'message': 'Data ingestion completed successfully for "{res_id}".'.format(
-                                    res_id = resource_dict['ckan_resource_id'])}
-                    aircan_status_update(site_url, api_key, status_dict)
+                        
+                    if not resource_dict['datastore_append_enabled']:
+                        # Do not mark yet as complete if append is enabled
+                        status_dict = {
+                            'res_id': resource_dict['ckan_resource_id'],
+                            'state': 'complete',
+                            'message': 'Data ingestion completed successfully for "{res_id}".'.format(
+                                        res_id = resource_dict['ckan_resource_id'])}
+                        aircan_status_update(site_url, api_key, status_dict)
                                     
                 except psycopg2.DataError as err:
                     # E is a str but with foreign chars e.g.

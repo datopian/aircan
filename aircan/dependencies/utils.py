@@ -1,9 +1,12 @@
+import os
 from datetime import datetime, time, timedelta
 import decimal
 import json
 import itertools
 import logging
 import requests
+import tempfile
+import hashlib
 from urllib.parse import urljoin, urlparse
 
 from airflow.hooks.base_hook import BaseHook
@@ -13,6 +16,8 @@ from airflow.models import Variable
 from sqlalchemy import create_engine
 from airflow.utils import timezone
 
+DOWNLOAD_TIMEOUT = 30
+CHUNK_SIZE = 16 * 1024 
 
 def frictionless_to_ckan_schema(field_type):
     '''
@@ -264,3 +269,49 @@ def _compose_error_email_body(site_url, datastore_manage_url, exception):
         error_msg = exception.value,
         error = exception.err
         )
+
+
+def get_response(url, headers):
+    def get_url():
+        kwargs = {'headers': headers, 'timeout': DOWNLOAD_TIMEOUT,
+         'stream': True
+         } 
+        return requests.get(url, **kwargs)
+    response = get_url()
+    if response.status_code == 202:
+        wait = 1
+        while wait < 120 and response.status_code == 202:
+            time.sleep(wait)
+            response = get_url()
+            wait *= 3
+    response.raise_for_status()
+    return response
+
+
+def download_resource_file(url, api_key):
+    '''
+    Download resource file from CKAN
+    '''
+    headers = {'Authorization': api_key}
+    response = get_response(url, headers)
+    filename = url.split('/')[-1].split('#')[0].split('?')[0]
+    m = hashlib.md5()
+
+    tmp_file = tempfile.NamedTemporaryFile(suffix=filename)
+    for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+        if chunk:
+            tmp_file.write(chunk)
+        m.update(chunk)
+    response.close()
+    tmp_file.seek(0)
+    file_hash = m.hexdigest()
+    return tmp_file, file_hash
+
+
+def join_path(path, *paths):
+    """
+    Join path with multiple paths
+    """
+    for p in paths:
+        path = os.path.join(path, p)
+    return path

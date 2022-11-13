@@ -8,6 +8,7 @@ import requests
 import tempfile
 import hashlib
 from urllib.parse import urljoin, urlparse
+from requests.adapters import HTTPAdapter, Retry
 
 from airflow.hooks.base_hook import BaseHook
 from airflow.providers.sendgrid.utils import emailer
@@ -17,6 +18,7 @@ from sqlalchemy import create_engine
 from airflow.utils import timezone
 
 DOWNLOAD_TIMEOUT = 30
+DOWNLOAD_RETRIES = 3
 CHUNK_SIZE = 16 * 1024 
 
 def frictionless_to_ckan_schema(field_type):
@@ -276,19 +278,19 @@ def get_response(url, headers):
         kwargs = {'headers': headers, 'timeout': DOWNLOAD_TIMEOUT,
          'stream': True
          } 
-        return requests.get(url, **kwargs)
+        retry = Retry(total=3, backoff_factor=0.3, status_forcelist=[402, 408, 502, 503, 504 ])
+        adapter = HTTPAdapter(max_retries=retry)
+        with requests.Session() as session:
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            return session.get(url, **kwargs)
     response = get_url()
-    if response.status_code == 202:
-        wait = 1
-        while wait < 120 and response.status_code == 202:
-            time.sleep(wait)
-            response = get_url()
-            wait *= 3
+
+
     response.raise_for_status()
     return response
 
-
-def download_resource_file(url, api_key):
+def download_resource_file(url, api_key, delete=True):
     '''
     Download resource file from CKAN
     '''
@@ -297,7 +299,7 @@ def download_resource_file(url, api_key):
     filename = url.split('/')[-1].split('#')[0].split('?')[0]
     m = hashlib.md5()
 
-    tmp_file = tempfile.NamedTemporaryFile(suffix=filename)
+    tmp_file = tempfile.NamedTemporaryFile(suffix=filename, delete=delete)
     for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
         if chunk:
             tmp_file.write(chunk)

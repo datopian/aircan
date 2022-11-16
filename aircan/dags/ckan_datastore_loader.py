@@ -200,11 +200,11 @@ def task_push_data_into_datastore(**context):
                     .get('datastore_append_or_update', global_append_datastore )
 
     # Temporary resorce file path from xcom result
+    ti = context['ti']
     xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
     resource_dict['resource_tmp_file'] = xcom_result['resource_tmp_file']
 
     if to_bool(load_with_postgres_copy):
-        ti = context['ti']
         raw_schema = context['params'].get('resource', {}).get('schema', False)
         if raw_schema and raw_schema != '{}':
             eval_schema = json.loads(raw_schema)

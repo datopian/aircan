@@ -229,6 +229,14 @@ def email_dispatcher(context, api_key, site_url):
 
 
 def ckan_datstore_loader_failure(context):
+
+    # Delete the temporary resource file
+    ti = context['ti']
+    xcom_result = ti.xcom_pull(task_ids='fetch_resource_data') or {}
+    resource_tmp_file = xcom_result.get('resource_tmp_file', False)
+    if resource_tmp_file:
+        os.unlink(resource_tmp_file)
+
     exception = context.get('exception')
     resource_dict = context['params'].get('resource', {})
     api_key = context['params'].get('ckan_config', {}).get('api_key')
@@ -275,8 +283,10 @@ def _compose_error_email_body(site_url, datastore_manage_url, exception):
 
 def get_response(url, headers):
     def get_url():
-        kwargs = {'headers': headers, 'timeout': DOWNLOAD_TIMEOUT,
-         'stream': True
+        kwargs = {
+            'headers': headers, 
+            'timeout': DOWNLOAD_TIMEOUT,
+            'stream': True
          } 
         retry = Retry(total=3, backoff_factor=0.3, status_forcelist=[402, 408, 502, 503, 504 ])
         adapter = HTTPAdapter(max_retries=retry)

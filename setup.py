@@ -22,7 +22,8 @@ setup(
         'python-dotenv',
         'requests',
         'sqlalchemy',
-        'frictionless'
+        'frictionless',
+        'boto3',
     ],
     package_data={},
     keywords='aircan, airflow, aircan-lib',

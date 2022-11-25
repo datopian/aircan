@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.models import Variable
+from airflow.exceptions import AirflowSkipException
 
 from aircan.dependencies.postgres_loader import (
     load_csv_to_postgres_via_copy,
@@ -29,7 +30,8 @@ from aircan.dependencies.api_loader import (
     compare_schema,
     create_datastore_table,
     delete_datastore_table,
-    load_resource_via_api
+    load_resource_via_api,
+    generate_file_and_load_to_GCP
     )
 
 args = {
@@ -193,15 +195,21 @@ def task_push_data_into_datastore(**context):
     datastore_postgres_url = context['params'].get('ckan_config', {}).get('ckan_datastore_postgres_url')
     load_with_postgres_copy = context['params'].get('ckan_config', {}).get('aircan_load_with_postgres_copy') 
     chunk_size = context['params'].get('ckan_config', {}).get('aircan_datastore_chunk_insert_rows_size') 
+    global_append_datastore = context['params'].get('ckan_config', {}).get('aircan_append_or_update_datastore')
+    resource_dict['datastore_append_enabled'] = context['params'].get('resource', {}) \
+                    .get('datastore_append_or_update', global_append_datastore )
+
+    # Temporary resorce file path from xcom result
+    ti = context['ti']
+    xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
+    resource_dict['resource_tmp_file'] = xcom_result['resource_tmp_file']
 
     if to_bool(load_with_postgres_copy):
-        ti = context['ti']
         raw_schema = context['params'].get('resource', {}).get('schema', False)
         if raw_schema and raw_schema != '{}':
             eval_schema = json.loads(raw_schema)
             schema = ast.literal_eval(eval_schema)
         else:
-            xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
             schema = xcom_result['resource'].get('schema', {})
         kwargs = {
             'site_url': ckan_site_url, 
@@ -232,9 +240,38 @@ push_data_into_datastore_task = PythonOperator(
 )
 # [END push_data_into_datastore_task]
 
+# [START generate_file_and_load_to_GCP]
+def task_generate_file_and_load_to_GCP(**context):
+    resource_dict = context['params'].get('resource', {})
+    ckan_config = context['params'].get('ckan_config', {})
+    global_append_datastore = context['params'].get('ckan_config', {}).get('aircan_append_or_update_datastore')
+    resource_dict['datastore_append_enabled'] = context['params'].get('resource', {}) \
+                    .get('datastore_append_or_update', global_append_datastore )
+    if not resource_dict['datastore_append_enabled']:
+        raise AirflowSkipException('Skipping GCP load as resource not configured to append to datastore')
+    generate_file_and_load_to_GCP(resource_dict, ckan_config)
+    return  {'success': True}
+
+    
+generate_file_and_push_to_GCP = PythonOperator(
+    task_id='generate_file_and_load_to_GCP',
+    provide_context=True,
+    python_callable=task_generate_file_and_load_to_GCP,
+    trigger_rule='none_failed_or_skipped',
+    dag=dag,
+    doc_md=dedent(
+        """\
+        ####  Generate file and push to GCP
+        This task generates file and push to GCP bucket for append enabled resources so that
+        it less impact when downloading resource file
+        """
+    ),
+)
+# [END generate_file_and_load_to_GCP]
 
 # [SET WORKFLOW ]
 check_schema_task.set_upstream(fetch_and_read_data_task)
 create_datastore_table_task.set_upstream(check_schema_task)
 push_data_into_datastore_task.set_upstream([create_datastore_table_task, check_schema_task])
+generate_file_and_push_to_GCP.set_upstream(push_data_into_datastore_task)
 # [END WORKFLOW]

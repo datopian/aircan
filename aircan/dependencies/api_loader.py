@@ -1,13 +1,14 @@
 import logging
+import os
 import json
 import requests
 from urllib.parse import urljoin
+from aircan.dependencies.s3_uploader import s3Uploader
 
 from aircan.dependencies.postgres_loader import aircan_status_update
 from airflow.models import Variable
 from airflow.exceptions import AirflowFailException
 from frictionless import Resource
-from frictionless.plugins.remote import RemoteControl
 from frictionless import describe
 
 from aircan.dependencies.utils import (
@@ -15,6 +16,8 @@ from aircan.dependencies.utils import (
     frictionless_to_ckan_schema,
     ckan_to_frictionless_schema,
     chunky,
+    download_resource_file,
+    join_path,
     DatastoreEncoder)
 
 from aircan import RequestError
@@ -26,14 +29,16 @@ def fetch_and_read(resource_dict, site_url, api_key):
     """
     logging.info('Fetching resource data from url')
     try:
-        resource = describe(path=resource_dict['path'], type="resource")
+        resource_tmp_file, file_hash = download_resource_file(resource_dict['path'], api_key, delete=False)
+        logging.info('File hash: {0}'.format(file_hash))
+        resource = describe(path=resource_tmp_file.name, type="resource")
         status_dict = { 
                 'res_id': resource_dict['ckan_resource_id'],
                 'state': 'progress',
                 'message': 'Fetching datafile from {0}.'.format(resource_dict['path']),
             }
         aircan_status_update(site_url, api_key, status_dict)
-        return {'sucess': True, 'resource': resource}
+        return {'sucess': True, 'resource': resource, 'resource_tmp_file': resource_tmp_file.name}
 
     except Exception as err:
         raise AirflowCKANException(
@@ -174,8 +179,8 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size
     logging.info("Loading resource via API lib")
     try:
         # Push data untill records is empty 
-        control = RemoteControl(http_timeout=50)
         have_unique_keys = resource_dict.get('datastore_unique_keys', False)
+        resource_tmp_file = resource_dict['resource_tmp_file']
         method = 'insert'
         if have_unique_keys:
             method = 'upsert'
@@ -185,7 +190,7 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size
                     'message': 'Data ingestion is in progress.'
                 }
         aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
-        with Resource(resource_dict['path'], control=control) as resource:
+        with Resource(resource_tmp_file) as resource:
             count = 0
             for i, records in enumerate(chunky(resource.row_stream, int(chunk_size))):
                 count += len(records)
@@ -215,7 +220,50 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size
                      res_id=resource_dict['ckan_resource_id'])
                 }
             aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
-            return {'success': True}
+        os.unlink(resource_tmp_file)
+        return {'success': True}
+    except Exception as err:
+        raise AirflowCKANException('Data ingestion has failed.', str(err))
+
+
+def generate_file_and_load_to_GCP(resource_dict, ckan_config):
+    """
+    Generate new file from dump url and load to GCP
+    """
+    logging.info("Generating file and pushing to GCP")
+    resource_path  = resource_dict['path']
+    resource_id = resource_dict['ckan_resource_id']
+    site_url = ckan_config['site_url']
+    api_key = ckan_config['api_key']
+    storage_path = ckan_config['ckan_s3_storage_path']
+    dump_url = join_path(site_url, 'datastore','dump', resource_id)
+    
+    try:
+        tmp_file, file_hash = download_resource_file(dump_url, api_key)
+        logging.info('File hash: {0}'.format(file_hash))
+        s3uploder = s3Uploader(
+            service_name = 's3',
+            aws_access_key_id = ckan_config['ckan_s3_access_key_id'],
+            aws_secret_access_key = ckan_config['ckan_s3_secret_access_key'],
+            endpoint_url = ckan_config['ckan_s3_host_name'],
+            region_name = ckan_config['ckan_s3_region_name'],
+            bucket_name = ckan_config['ckan_s3_bucket_name'],
+        )
+        file_name = resource_path.split('/')[-1]
+        storage_path = join_path(storage_path, 'resources', resource_id, file_name)
+        s3uploder.upload_file(tmp_file.name, storage_path)
+        tmp_file.close()
+
+        logging.info('Successfully ingested data "{res_id}".'.format(
+                     res_id=resource_id))
+        status_dict = { 
+                    'res_id': resource_id,
+                    'state': 'complete',
+                    'message': 'Data ingestion completed successfully for "{res_id}".'.format(
+                     res_id= resource_id)
+                }
+        aircan_status_update(site_url, api_key, status_dict)
+        return {'success': True}
             
     except Exception as err:
         raise AirflowCKANException('Data ingestion has failed.', str(err))

@@ -1,16 +1,25 @@
 import logging
+import os
 import json
 import requests
 from urllib.parse import urljoin
+from aircan.dependencies.s3_uploader import s3Uploader
 
 from aircan.dependencies.postgres_loader import aircan_status_update
 from airflow.models import Variable
 from airflow.exceptions import AirflowFailException
 from frictionless import Resource
-from frictionless.plugins.remote import RemoteControl
 from frictionless import describe
 
-from aircan.dependencies.utils import AirflowCKANException, chunky, DatastoreEncoder
+from aircan.dependencies.utils import (
+    AirflowCKANException, 
+    frictionless_to_ckan_schema,
+    ckan_to_frictionless_schema,
+    chunky,
+    download_resource_file,
+    join_path,
+    DatastoreEncoder)
+
 from aircan import RequestError
 
 def fetch_and_read(resource_dict, site_url, api_key):
@@ -20,44 +29,74 @@ def fetch_and_read(resource_dict, site_url, api_key):
     """
     logging.info('Fetching resource data from url')
     try:
-        resource = describe(path=resource_dict['path'], type="resource")
+        resource_tmp_file, file_hash = download_resource_file(resource_dict['path'], api_key, delete=False)
+        logging.info('File hash: {0}'.format(file_hash))
+        resource = describe(path=resource_tmp_file.name, type="resource")
         status_dict = { 
                 'res_id': resource_dict['ckan_resource_id'],
                 'state': 'progress',
                 'message': 'Fetching datafile from {0}.'.format(resource_dict['path']),
             }
         aircan_status_update(site_url, api_key, status_dict)
-        return {'sucess': True, 'resource': resource}
+        return {'sucess': True, 'resource': resource, 'resource_tmp_file': resource_tmp_file.name}
 
     except Exception as err:
         raise AirflowCKANException(
              'Failed to fetch data file from {0}.'.format(resource_dict['path']), str(err))
 
-def compare_schema(site_url, ckan_api_key, res_id, schema):
+def compare_schema(site_url, ckan_api_key, res_dict, schema):
     """
     compare old datastore schema with new schema to know wheather 
     it changed or not.
+    retrun type: list
+    reutrn value: [recreate_datastore_table_flag, old_schema]
     """
+
+    res_id = res_dict['ckan_resource_id']
     logging.info('fetching old data dictionary {0}'.format(res_id))
     try:
         url = urljoin(site_url, '/api/3/action/datastore_search')
         response = requests.get(url,
-                        params={'resource_id': res_id, 'limit':0 },
+                        params={'resource_id': res_id, 'limit': 0},
                         headers={'Authorization': ckan_api_key}
                     )
         if response.status_code == 200:
             resource_json = response.json()
             old_schema_dict = resource_json['result'].get('fields', [])
-            old_schema = [fields['id'] for fields in old_schema_dict]
-            if '_id' in old_schema:
-                old_schema.remove('_id')
-            new_schema = [field_name['name'] for field_name in schema]
-            if set(old_schema) == set(new_schema):
-                return [True, old_schema_dict]
+            
+            # filter old and new schema and compare them if they are identical
+            old_schema_columns = [fields['id'] for fields in old_schema_dict if fields['id'] != '_id']
+            new_schema_columns = [field_name['name'] for field_name in schema]
+            have_same_columns = set(old_schema_columns) == set(new_schema_columns)
+
+            if have_same_columns:
+                # override schema type with user defined type from data dictionary or old schema
+                type_has_changed = False
+                for idx, old_field in enumerate(old_schema_dict):
+                    # if field name is the same and type is different then override it
+                    if old_field.get('info', {}).get('type', False):
+                        if ckan_to_frictionless_schema(old_field['type']) != old_field.get('info', {}).get('type', False):
+                            logging.info('type has changed for field {0},'.format(old_field['id']))
+                            old_schema_dict[idx]['type'] = old_field.get('info', {}).get('type', old_field['type'])
+                            type_has_changed = True
+                        
+                # if type has changed for append enabled resource there is chance of previous data being deleted
+                # so throw an error
+                if res_dict['datastore_append_enabled'] and type_has_changed:
+                    raise AirflowCKANException('You cannot change type of existing fields in append enabled resource.')
+                elif type_has_changed:
+                    #  have same columns but column type is changed so recreate table with overriding schemas
+                    return [True, old_schema_dict]
+                else:
+                    # Both columns and types are same so no need to recreate table
+                    return [False, old_schema_dict]
             else:
-                return [False, None]
+                return [True, None]
         else:
-            return [False, None]
+            return [True, None]
+
+    except AirflowCKANException as err:
+        raise err
     except Exception as err: 
         raise AirflowCKANException(
             'Failed to fetch data dictionary for {0}'.format(res_id), str(err))
@@ -90,36 +129,21 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
 
 def create_datastore_table(data_resource_id, resource_schema, old_schema, ckan_api_key, ckan_site_url):
     logging.info('Create Datastore Table method starts')
-    # schema field type to postgres field type mapping  
-    DATASTORE_TYPE_MAPPING = {
-      'integer': 'integer',
-      'number': 'numeric',
-      'datetime': 'timestamp', 
-      'date': 'date',
-      'time': 'time', 
-      'string': 'text',
-      'duration': 'interval',
-      'boolean': 'boolean',
-      'object': 'jsonb',
-      'array': 'array',
-      'year': 'text',
-      'yearmonth': 'text',
-      'geopoint': 'text',
-      'geojson': 'jsonb',
-      'any': 'text'
-    }
-    
+   
     schema = []
+
     for f in resource_schema:
         field = {
             'id': f['name'],
-            'type': DATASTORE_TYPE_MAPPING.get(f['type'], 'text')
+            'type':  frictionless_to_ckan_schema(f['type'])
         }
+
         # Preserve old data dictionary if it exists for matching fields
         if old_schema:
             old_data_dictionary = [item for item in old_schema if f['name'] == item['id']][0].get('info', False)
             if old_data_dictionary:
                 field['info'] = old_data_dictionary
+                field['type'] = frictionless_to_ckan_schema(old_data_dictionary.get('type', field['type']))
         schema.append(field)
     
     data_dict = dict(
@@ -155,8 +179,8 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size
     logging.info("Loading resource via API lib")
     try:
         # Push data untill records is empty 
-        control = RemoteControl(http_timeout=50)
         have_unique_keys = resource_dict.get('datastore_unique_keys', False)
+        resource_tmp_file = resource_dict['resource_tmp_file']
         method = 'insert'
         if have_unique_keys:
             method = 'upsert'
@@ -166,7 +190,7 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size
                     'message': 'Data ingestion is in progress.'
                 }
         aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
-        with Resource(resource_dict['path'], control=control) as resource:
+        with Resource(resource_tmp_file) as resource:
             count = 0
             for i, records in enumerate(chunky(resource.row_stream, int(chunk_size))):
                 count += len(records)
@@ -196,7 +220,50 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size
                      res_id=resource_dict['ckan_resource_id'])
                 }
             aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
-            return {'success': True}
+        os.unlink(resource_tmp_file)
+        return {'success': True}
+    except Exception as err:
+        raise AirflowCKANException('Data ingestion has failed.', str(err))
+
+
+def generate_file_and_load_to_GCP(resource_dict, ckan_config):
+    """
+    Generate new file from dump url and load to GCP
+    """
+    logging.info("Generating file and pushing to GCP")
+    resource_path  = resource_dict['path']
+    resource_id = resource_dict['ckan_resource_id']
+    site_url = ckan_config['site_url']
+    api_key = ckan_config['api_key']
+    storage_path = ckan_config['ckan_s3_storage_path']
+    dump_url = join_path(site_url, 'datastore','dump', resource_id)
+    
+    try:
+        tmp_file, file_hash = download_resource_file(dump_url, api_key)
+        logging.info('File hash: {0}'.format(file_hash))
+        s3uploder = s3Uploader(
+            service_name = 's3',
+            aws_access_key_id = ckan_config['ckan_s3_access_key_id'],
+            aws_secret_access_key = ckan_config['ckan_s3_secret_access_key'],
+            endpoint_url = ckan_config['ckan_s3_host_name'],
+            region_name = ckan_config['ckan_s3_region_name'],
+            bucket_name = ckan_config['ckan_s3_bucket_name'],
+        )
+        file_name = resource_path.split('/')[-1]
+        storage_path = join_path(storage_path, 'resources', resource_id, file_name)
+        s3uploder.upload_file(tmp_file.name, storage_path)
+        tmp_file.close()
+
+        logging.info('Successfully ingested data "{res_id}".'.format(
+                     res_id=resource_id))
+        status_dict = { 
+                    'res_id': resource_id,
+                    'state': 'complete',
+                    'message': 'Data ingestion completed successfully for "{res_id}".'.format(
+                     res_id= resource_id)
+                }
+        aircan_status_update(site_url, api_key, status_dict)
+        return {'success': True}
             
     except Exception as err:
         raise AirflowCKANException('Data ingestion has failed.', str(err))

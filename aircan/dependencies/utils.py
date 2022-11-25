@@ -1,10 +1,14 @@
+import os
 from datetime import datetime, time, timedelta
 import decimal
 import json
 import itertools
 import logging
 import requests
+import tempfile
+import hashlib
 from urllib.parse import urljoin, urlparse
+from requests.adapters import HTTPAdapter, Retry
 
 from airflow.hooks.base_hook import BaseHook
 from airflow.providers.sendgrid.utils import emailer
@@ -12,6 +16,55 @@ from airflow.exceptions import AirflowFailException
 from airflow.models import Variable
 from sqlalchemy import create_engine
 from airflow.utils import timezone
+
+DOWNLOAD_TIMEOUT = 30
+DOWNLOAD_RETRIES = 3
+CHUNK_SIZE = 16 * 1024 
+
+def frictionless_to_ckan_schema(field_type):
+    '''
+    Convert frictionless schema to ckan schema
+    '''
+    mapper = {
+        'integer': 'integer',
+        'number': 'numeric',
+        'datetime': 'timestamp', 
+        'timestamptz':'timestamptz',
+        'date': 'date',
+        'time': 'time', 
+        'string': 'text',
+        'duration': 'interval',
+        'boolean': 'boolean',
+        'object': 'jsonb',
+        'array': 'array',
+        'year': 'text',
+        'yearmonth': 'text',
+        'geopoint': 'text',
+        'geojson': 'jsonb',
+        'any': 'text'
+        }
+    return mapper.get(field_type, 'text')
+
+def ckan_to_frictionless_schema(field_type):
+    '''
+    Convert ckan schema to frictionless schema
+    '''
+    mapper = {
+        'integer': 'integer',
+        'numeric': 'number',
+        'timestamp': 'datetime', 
+        'timestamptz':'timestamptz',
+        'date': 'date',
+        'time': 'time', 
+        'text': 'string',
+        'interval': 'duration',
+        'boolean': 'boolean',
+        'jsonb': 'object',
+        'array': 'array',
+        }
+
+    return mapper.get(field_type, 'text')
+
 
 def days_ago(n, hour=0, minute=0, second=0, microsecond=0):
     return datetime.combine(
@@ -110,7 +163,7 @@ def to_bool(value):
 
 
 class AirflowCKANException(AirflowFailException):
-    def __init__(self, value, err,):
+    def __init__(self, value, err=None):
         super().__init__(value, err)
         self.value = value
         self.err = err
@@ -176,16 +229,24 @@ def email_dispatcher(context, api_key, site_url):
 
 
 def ckan_datstore_loader_failure(context):
+
+    # Delete the temporary resource file
+    ti = context['ti']
+    xcom_result = ti.xcom_pull(task_ids='fetch_resource_data') or {}
+    resource_tmp_file = xcom_result.get('resource_tmp_file', False)
+    if resource_tmp_file:
+        os.unlink(resource_tmp_file)
+
     exception = context.get('exception')
     resource_dict = context['params'].get('resource', {})
     api_key = context['params'].get('ckan_config', {}).get('api_key')
     site_url = context['params'].get('ckan_config', {}).get('site_url')    
-    logging.error(exception.err)
+    logging.error(exception.err or exception.value)
     status_dict = { 
             'res_id': resource_dict.get('ckan_resource_id'),
             'state': 'error',
             'message': exception.value,
-            'error': exception.err
+            'error': exception.err or exception.value
         }
     aircan_status_update(site_url, api_key, status_dict)
     email_dispatcher(context, api_key, site_url)
@@ -218,3 +279,51 @@ def _compose_error_email_body(site_url, datastore_manage_url, exception):
         error_msg = exception.value,
         error = exception.err
         )
+
+
+def get_response(url, headers):
+    def get_url():
+        kwargs = {
+            'headers': headers, 
+            'timeout': DOWNLOAD_TIMEOUT,
+            'stream': True
+         } 
+        retry = Retry(total=3, backoff_factor=0.3, status_forcelist=[402, 408, 502, 503, 504 ])
+        adapter = HTTPAdapter(max_retries=retry)
+        with requests.Session() as session:
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            return session.get(url, **kwargs)
+    response = get_url()
+
+
+    response.raise_for_status()
+    return response
+
+def download_resource_file(url, api_key, delete=True):
+    '''
+    Download resource file from CKAN
+    '''
+    headers = {'Authorization': api_key}
+    response = get_response(url, headers)
+    filename = url.split('/')[-1].split('#')[0].split('?')[0]
+    m = hashlib.md5()
+
+    tmp_file = tempfile.NamedTemporaryFile(suffix=filename, delete=delete)
+    for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+        if chunk:
+            tmp_file.write(chunk)
+        m.update(chunk)
+    response.close()
+    tmp_file.seek(0)
+    file_hash = m.hexdigest()
+    return tmp_file, file_hash
+
+
+def join_path(path, *paths):
+    """
+    Join path with multiple paths
+    """
+    for p in paths:
+        path = os.path.join(path, p)
+    return path

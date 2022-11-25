@@ -1,4 +1,5 @@
 import io
+import os
 import hashlib
 import logging
 import psycopg2
@@ -108,6 +109,7 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
         site_url = kwargs['site_url']
         api_key = kwargs['api_key']
         fields = schema.get('fields', [])
+        resource_tmp_file = resource_dict['resource_tmp_file']
         column_names = ', '.join(['"{0}"'.format(field['name']) for field in fields])
         unique_keys = resource_dict.get('datastore_unique_keys', False)
         cur = connection.cursor()
@@ -137,7 +139,8 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                 sql_str = upsert_sql
             else:
                 sql_str = insert_sql
-            with Resource(path=resource_dict['path'], control=control) as resource: 
+
+            with Resource(resource_tmp_file) as resource: 
                 logging.info('Data records are being ingested.')
                 status_dict = {
                     'res_id': resource_dict['ckan_resource_id'],
@@ -160,12 +163,15 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                             update_set = ','.join(['"{0}"=EXCLUDED."{0}"'.format(field['name']) for field in fields])
                         ),
                         buffer_data)
-                    status_dict = {
-                        'res_id': resource_dict['ckan_resource_id'],
-                        'state': 'complete',
-                        'message': 'Data ingestion completed successfully for "{res_id}".'.format(
-                                    res_id = resource_dict['ckan_resource_id'])}
-                    aircan_status_update(site_url, api_key, status_dict)
+                        
+                    if not resource_dict['datastore_append_enabled']:
+                        # Do not mark yet as complete if append is enabled
+                        status_dict = {
+                            'res_id': resource_dict['ckan_resource_id'],
+                            'state': 'complete',
+                            'message': 'Data ingestion completed successfully for "{res_id}".'.format(
+                                        res_id = resource_dict['ckan_resource_id'])}
+                        aircan_status_update(site_url, api_key, status_dict)
                                     
                 except psycopg2.DataError as err:
                     # E is a str but with foreign chars e.g.
@@ -174,6 +180,9 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                     raise Exception(str(err))
                 except Exception as err:
                     raise Exception(str(err))
+                    
+            # Delete the temporary resource file
+            os.unlink(resource_tmp_file)
         except Exception as err:
             raise AirflowCKANException('Data ingestion has failed.', str(err))
         finally:

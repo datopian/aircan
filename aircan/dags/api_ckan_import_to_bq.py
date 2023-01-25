@@ -65,7 +65,9 @@ def task_import_resource_to_bq(**context):
     # sample bq_table_id: "bigquerytest-271707.nhs_test.dag_test"
     bq_table_id = '%s.%s.%s' % (bq_project_id, bq_dataset_id, bq_table_name)          
     logging.info('Importing %s to BQ %s' % (gc_file_url, bq_table_id))
-    bq_import_csv(bq_table_id, gc_file_url, schema)
+    ckan_conf = context['params'].get('ckan_config', {})
+    ckan_conf['resource_id'] = context['params'].get('resource', {}).get('ckan_resource_id')
+    bq_import_csv(bq_table_id, gc_file_url, schema, ckan_conf)
 
 import_resource_to_bq_task = PythonOperator(
     task_id='import_resource_to_bq',

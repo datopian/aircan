@@ -104,14 +104,14 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
     but avoids the superuser issue. <-- picked
     '''
     try:
-        schema = kwargs['schema']
         resource_dict = kwargs['resource_dict']
         site_url = kwargs['site_url']
         api_key = kwargs['api_key']
-        fields = schema.get('fields', [])
+        fields = kwargs['schema']
         resource_tmp_file = resource_dict['resource_tmp_file']
         column_names = ', '.join(['"{0}"'.format(field['name']) for field in fields])
         unique_keys = resource_dict.get('datastore_unique_keys', False)
+        date_fields = [f['name'] for f in fields if f['type'] in ('date', 'datetime')]
         cur = connection.cursor()
 
         insert_sql = '''
@@ -149,7 +149,7 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                     }
                 aircan_status_update(site_url, api_key, status_dict)
                 try:
-                    df = pd.read_csv(resource.text_stream, converters={'column_name': str}, keep_default_na=False)
+                    df = pd.read_csv(resource.text_stream, parse_dates=date_fields, infer_datetime_format=True, converters={'column_name': str}, keep_default_na=False)
                     buffer_data = io.StringIO()
                     df.to_csv(buffer_data, index=False)
                     buffer_data.seek(0)

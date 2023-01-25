@@ -54,6 +54,17 @@ def compare_schema(site_url, ckan_api_key, res_dict, schema):
 
     res_id = res_dict['ckan_resource_id']
     logging.info('fetching old data dictionary {0}'.format(res_id))
+
+    # generate ckan schema from frictionless schema
+    ckan_schema = []
+    for f in schema:
+        field = {
+            'name': f['name'],
+            'id': f['name'],
+            'type': frictionless_to_ckan_schema(f['type'])
+        }
+        ckan_schema.append(field)
+
     try:
         url = urljoin(site_url, '/api/3/action/datastore_search')
         response = requests.get(url,
@@ -80,20 +91,27 @@ def compare_schema(site_url, ckan_api_key, res_dict, schema):
                             old_schema_dict[idx]['type'] = old_field.get('info', {}).get('type', old_field['type'])
                             type_has_changed = True
                         
+            # Preserve data dictionary if it exists
+                for idx, f in enumerate(ckan_schema):
+                    dictionary = [item for item in old_schema_dict if f['id'] == item['id']][0].get('info', False)
+                    if dictionary:
+                        ckan_schema[idx]['type'] = frictionless_to_ckan_schema(dictionary.get('type', f['type']))
+                        ckan_schema[idx]['info'] = dictionary
+
                 # if type has changed for append enabled resource there is chance of previous data being deleted
                 # so throw an error
                 if res_dict['datastore_append_enabled'] and type_has_changed:
                     raise AirflowCKANException('You cannot change type of existing fields in append enabled resource.')
                 elif type_has_changed:
                     #  have same columns but column type is changed so recreate table with overriding schemas
-                    return [True, old_schema_dict]
+                    return [True, ckan_schema]
                 else:
                     # Both columns and types are same so no need to recreate table
-                    return [False, old_schema_dict]
+                    return [False, ckan_schema]
             else:
-                return [True, None]
+                return [True, ckan_schema]
         else:
-            return [True, None]
+            return [True, ckan_schema]
 
     except AirflowCKANException as err:
         raise err
@@ -127,25 +145,9 @@ def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
     except Exception as err:
         raise AirflowCKANException('Failed to clean up table.', str(err))
 
-def create_datastore_table(data_resource_id, resource_schema, old_schema, ckan_api_key, ckan_site_url):
+def create_datastore_table(data_resource_id, schema, ckan_api_key, ckan_site_url):
     logging.info('Create Datastore Table method starts')
-   
-    schema = []
 
-    for f in resource_schema:
-        field = {
-            'id': f['name'],
-            'type':  frictionless_to_ckan_schema(f['type'])
-        }
-
-        # Preserve old data dictionary if it exists for matching fields
-        if old_schema:
-            old_data_dictionary = [item for item in old_schema if f['name'] == item['id']][0].get('info', False)
-            if old_data_dictionary:
-                field['info'] = old_data_dictionary
-                field['type'] = frictionless_to_ckan_schema(old_data_dictionary.get('type', field['type']))
-        schema.append(field)
-    
     data_dict = dict(
         # resource={'package_id': 'my-first-dataset', 'name' : 'Test1'},
         resource_id=data_resource_id,

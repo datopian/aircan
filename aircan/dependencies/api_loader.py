@@ -86,9 +86,12 @@ def compare_schema(site_url, ckan_api_key, res_dict, schema):
                 for idx, old_field in enumerate(old_schema_dict):
                     # if field name is the same and type is different then override it
                     if old_field.get('info', {}).get('type', False):
-                        if ckan_to_frictionless_schema(old_field['type']) != old_field.get('info', {}).get('type', False):
+                        override_type = old_field.get('info', {}).get('type', False)
+                        if override_type in ['year', 'yearmonth', 'geopoint']:  # ignore these types
+                           pass
+                        elif ckan_to_frictionless_schema(old_field['type']) != override_type:
                             logging.info('type has changed for field {0},'.format(old_field['id']))
-                            old_schema_dict[idx]['type'] = old_field.get('info', {}).get('type', old_field['type'])
+                            old_schema_dict[idx]['type'] = override_type or old_field['type']
                             type_has_changed = True
                         
             # Preserve data dictionary if it exists

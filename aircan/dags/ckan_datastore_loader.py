@@ -122,13 +122,13 @@ def task_check_schema(**context):
         xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
         schema = xcom_result['resource'].get('schema', {}).get('fields', [])
 
-
-    [create_new_datastore_table, old_schema] = compare_schema(
+    # compare and get the ckan structure schema
+    [create_new_datastore_table, ckan_schema] = compare_schema(
             ckan_site_url, ckan_api_key, resource_dict, schema
         )
 
-    # save old schema to xcom for later process
-    ti.xcom_push(key='old_schema', value=old_schema)
+    #  Store CKAN structured schema in XCOM
+    ti.xcom_push(key='ckan_schema', value=ckan_schema)
 
     if create_new_datastore_table:
         return ['create_datastore_table', 'push_data_into_datastore']
@@ -162,12 +162,10 @@ def task_create_datastore_table(**context):
     resource_id = context['params'].get('resource', {}).get('ckan_resource_id')
     ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
     ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
-    old_schema = ti.xcom_pull(task_ids='check_schema', key='old_schema')
-    xcom_result = ti.xcom_pull(task_ids='fetch_resource_data')
-    schema = xcom_result['resource'].get('schema', {}).get('fields', [])
+    schema = ti.xcom_pull(task_ids='check_schema', key='ckan_schema')
     logging.info('Invoking Delete Datastore')
     delete_datastore_table(resource_id, ckan_api_key, ckan_site_url)
-    create_datastore_table(resource_id, schema, old_schema, ckan_api_key, ckan_site_url)
+    create_datastore_table(resource_id, schema, ckan_api_key, ckan_site_url)
 
 
 create_datastore_table_task = PythonOperator(
@@ -215,7 +213,7 @@ def task_push_data_into_datastore(**context):
             'site_url': ckan_site_url, 
             'resource_dict': resource_dict,
             'api_key': ckan_api_key,
-            'schema': schema
+            'schema': ti.xcom_pull(task_ids='check_schema', key='ckan_schema'),
         }
         delete_index(resource_dict, connection=get_connection(datastore_postgres_url))
         load_csv_to_postgres_via_copy(connection=get_connection(datastore_postgres_url), **kwargs)

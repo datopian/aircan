@@ -149,7 +149,7 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                     }
                 aircan_status_update(site_url, api_key, status_dict)
                 try:
-                    df = pd.read_csv(resource.text_stream, parse_dates=date_fields, dayfirst=True, infer_datetime_format=True, converters={'column_name': str}, keep_default_na=False)
+                    df = pd.read_csv(resource.text_stream, parse_dates=date_fields, dayfirst=True, infer_datetime_format=False, converters={'column_name': str}, keep_default_na=False)
                     buffer_data = io.StringIO()
                     df.to_csv(buffer_data, index=False)
                     buffer_data.seek(0)

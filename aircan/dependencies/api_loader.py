@@ -27,7 +27,7 @@ def fetch_and_read(resource_dict, site_url, api_key):
     Fetch and read source type, metadata and schema from
     ckan resource URl.
     """
-    logging.info('Fetching resource datax from url')
+    logging.info('Fetching resource data from url')
     try:
         if urlparse(resource_dict['path']).netloc == urlparse(site_url).netloc:
             headers = {'Authorization': api_key}

@@ -29,10 +29,9 @@ def fetch_and_read(resource_dict, site_url, api_key):
     """
     logging.info('Fetching resource data from url')
     try:
+        headers = {}
         if urlparse(resource_dict['path']).netloc == urlparse(site_url).netloc:
             headers = {'Authorization': api_key}
-        else:
-            headers = {}
         resource_tmp_file, file_hash = download_resource_file(resource_dict['path'], headers, delete=False)
         logging.info('File hash: {0}'.format(file_hash))
         resource = describe(path=resource_tmp_file.name, type="resource")
@@ -91,10 +90,13 @@ def compare_schema(site_url, ckan_api_key, res_dict, schema):
                     # if field name is the same and type is different then override it
                     if old_field.get('info', {}).get('type', False):
                         override_type = old_field.get('info', {}).get('type', False)
-                        if override_type in ['year', 'yearmonth', 'geopoint']:  # ignore these types
+                        if override_type in ['year', 'yearmonth', 'geopoint'] or \
+                            override_type in ['integer'] and old_field['type'] in ['int4']:  # ignore these types
                            pass
                         elif ckan_to_frictionless_schema(old_field['type']) != override_type:
-                            logging.info('type has changed for field {0},'.format(old_field['id']))
+                            logging.info('type has changed for field {0}, from {1} to {2} '.format(
+                                old_field['id'], old_field['type'], override_type
+                                ))
                             old_schema_dict[idx]['type'] = override_type or old_field['type']
                             type_has_changed = True
                         

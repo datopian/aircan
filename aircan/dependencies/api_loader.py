@@ -2,7 +2,7 @@ import logging
 import os
 import json
 import requests
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from aircan.dependencies.s3_uploader import s3Uploader
 
 from aircan.dependencies.postgres_loader import aircan_status_update
@@ -27,9 +27,13 @@ def fetch_and_read(resource_dict, site_url, api_key):
     Fetch and read source type, metadata and schema from
     ckan resource URl.
     """
-    logging.info('Fetching resource data from url')
+    logging.info('Fetching resource datax from url')
     try:
-        resource_tmp_file, file_hash = download_resource_file(resource_dict['path'], api_key, delete=False)
+        if urlparse(resource_dict['path']).netloc == urlparse(site_url).netloc:
+            headers = {'Authorization': api_key}
+        else:
+            headers = {}
+        resource_tmp_file, file_hash = download_resource_file(resource_dict['path'], headers, delete=False)
         logging.info('File hash: {0}'.format(file_hash))
         resource = describe(path=resource_tmp_file.name, type="resource")
         status_dict = { 
@@ -244,7 +248,8 @@ def generate_file_and_load_to_GCP(resource_dict, ckan_config):
     dump_url = join_path(site_url, 'datastore','dump', resource_id)
     
     try:
-        tmp_file, file_hash = download_resource_file(dump_url, api_key)
+        headers = {'Authorization': api_key}
+        tmp_file, file_hash = download_resource_file(dump_url, headers)
         logging.info('File hash: {0}'.format(file_hash))
         s3uploder = s3Uploader(
             service_name = 's3',

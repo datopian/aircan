@@ -287,7 +287,7 @@ def get_response(url, headers):
             'headers': headers, 
             'timeout': DOWNLOAD_TIMEOUT,
             'stream': True
-         } 
+        }
         retry = Retry(total=3, backoff_factor=0.3, status_forcelist=[402, 408, 502, 503, 504 ])
         adapter = HTTPAdapter(max_retries=retry)
         with requests.Session() as session:
@@ -300,11 +300,10 @@ def get_response(url, headers):
     response.raise_for_status()
     return response
 
-def download_resource_file(url, api_key, delete=True):
+def download_resource_file(url, headers, delete=True):
     '''
     Download resource file from CKAN
     '''
-    headers = {'Authorization': api_key}
     response = get_response(url, headers)
     filename = url.split('/')[-1].split('#')[0].split('?')[0]
     m = hashlib.md5()

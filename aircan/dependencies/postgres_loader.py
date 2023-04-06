@@ -9,8 +9,6 @@ import pandas as pd
 from aircan import RequestError, DatabaseError
 from aircan.dependencies.utils import AirflowCKANException, string_chunky, aircan_status_update
 from frictionless import Resource
-from frictionless.plugins.remote import RemoteControl
-
 
 def delete_index(data_resource, connection=None):
     sql_drop_index = u'DROP INDEX "{0}" CASCADE'
@@ -119,11 +117,13 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
             FROM STDIN
             WITH (DELIMITER '{delimiter}', FORMAT csv, HEADER 1, ENCODING '{encoding}');
             '''
-
-        upsert_sql = '''
+        
+        upsert_table_creation = '''
             CREATE TEMPORARY TABLE \"temp_{resource_id}\" (LIKE \"{resource_id}\") ON COMMIT DROP; 
             ALTER TABLE \"temp_{resource_id}\" DROP COLUMN _id;
-            
+            '''
+        
+        upsert_sql = '''
             COPY \"temp_{resource_id}\" ({column_names}) 
             FROM STDIN
             WITH (DELIMITER '{delimiter}', FORMAT csv, HEADER 1, ENCODING '{encoding}');
@@ -134,7 +134,6 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
             '''
 
         try:
-            control = RemoteControl(http_timeout=50)
             if unique_keys: 
                 sql_str = upsert_sql
             else:
@@ -149,20 +148,39 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
                     }
                 aircan_status_update(site_url, api_key, status_dict)
                 try:
-                    df = pd.read_csv(resource.text_stream, parse_dates=date_fields, dayfirst=True, infer_datetime_format=False, converters={'column_name': str}, keep_default_na=False)
-                    buffer_data = io.StringIO()
-                    df.to_csv(buffer_data, index=False)
-                    buffer_data.seek(0)
-                    cur.copy_expert(sql_str
-                        .format(
-                            resource_id = resource_dict['ckan_resource_id'],
-                            column_names = column_names,
-                            unique_keys =  ', '.join('"{0}"'.format(key) for key in unique_keys) if unique_keys else '',
-                            delimiter = ',',
-                            encoding = 'UTF8',
-                            update_set = ','.join(['"{0}"=EXCLUDED."{0}"'.format(field['name']) for field in fields])
-                        ),
-                        buffer_data)
+                    df = pd.read_csv(resource.text_stream, parse_dates=date_fields, dayfirst=True, infer_datetime_format=False, converters={'column_name': str}, keep_default_na=False, chunksize=85000)
+                    iter_count = 0 
+                    rows_processed = 0
+                    if unique_keys:
+                        logging.info("Upsert Temp Table Creation")
+                        cur.execute(upsert_table_creation
+                            .format(
+                                resource_id = resource_dict['ckan_resource_id'],
+                                column_names = column_names,
+                                unique_keys =  ', '.join('"{0}"'.format(key) for key in unique_keys) if unique_keys else '',
+                                delimiter = ',',
+                                encoding = 'UTF8',
+                                update_set = ','.join(['"{0}"=EXCLUDED."{0}"'.format(field['name']) for field in fields])
+                            ))
+                            
+                    for data in df:
+                        rows_processed += len(data)
+                        logging.info('Data Inserted for %s rows using %s iterations for resource %s', rows_processed, iter_count+1, resource_dict['ckan_resource_id'])
+                        buffer_data = io.StringIO()
+                        data.to_csv(buffer_data, index=False)
+                        buffer_data.seek(0)
+                        cur.copy_expert(sql_str
+                            .format(
+                                resource_id = resource_dict['ckan_resource_id'],
+                                column_names = column_names,
+                                unique_keys =  ', '.join('"{0}"'.format(key) for key in unique_keys) if unique_keys else '',
+                                delimiter = ',',
+                                encoding = 'UTF8',
+                                update_set = ','.join(['"{0}"=EXCLUDED."{0}"'.format(field['name']) for field in fields])
+                            ),
+                            buffer_data)
+                        iter_count = iter_count+1
+                    logging.info('Data Ingestion is completed for %s rows by %s iterations for resource %s', rows_processed, iter_count, resource_dict['ckan_resource_id'])
                         
                     if not resource_dict['datastore_append_enabled']:
                         # Do not mark yet as complete if append is enabled

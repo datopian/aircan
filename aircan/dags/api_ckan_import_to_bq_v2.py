@@ -69,7 +69,7 @@ def task_import_resource_to_bq(**context):
     bq_import_csv(bq_table_id, gc_file_url, schema, ckan_conf)
 
 import_resource_to_bq_task = PythonOperator(
-    task_id='import_resource_to_bq',
+    task_id='import_resource_to_bq_v2',
     provide_context=True,
     python_callable=task_import_resource_to_bq,
     dag=dag,

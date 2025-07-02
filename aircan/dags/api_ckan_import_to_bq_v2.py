@@ -58,6 +58,8 @@ def task_import_resource_to_bq(**context):
     
     raw_schema = context['params'].get('resource', {}).get('schema')
     eval_schema = json.loads(raw_schema)
+    if isinstance(eval_schema, str):
+        eval_schema = ast.literal_eval(eval_schema)
     schema = eval_schema.get('fields')
     logging.info("SCHEMA: {}".format(schema))
 

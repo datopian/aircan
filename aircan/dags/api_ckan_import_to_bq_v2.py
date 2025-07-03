@@ -6,7 +6,7 @@ import ast
 from datetime import date, datetime
 
 # Local imports
-from aircan.dependencies.google_cloud.bigquery_handler import bq_import_csv
+from aircan.dependencies.google_cloud.bigquery_handler_v2 import bq_import_csv
 
 # Third-party library imports
 from airflow import DAG

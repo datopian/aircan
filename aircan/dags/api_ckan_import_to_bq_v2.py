@@ -7,6 +7,7 @@ from datetime import date, datetime
 
 # Local imports
 from aircan.dependencies.google_cloud.bigquery_handler_v2 import bq_import_csv
+from aircan.dependencies.utils import aircan_status_update
 
 # Third-party library imports
 from airflow import DAG
@@ -47,6 +48,8 @@ dag = DAG(
 )
 
 def task_import_resource_to_bq(**context):
+    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
+    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     logging.info('Invoking import resource to bigquery')
     logging.info("resource: {}".format(context['params'].get('resource', {})))
 
@@ -68,7 +71,29 @@ def task_import_resource_to_bq(**context):
     logging.info('Importing %s to BQ %s' % (gc_file_url, bq_table_id))
     ckan_conf = context['params'].get('ckan_config', {})
     ckan_conf['resource_id'] = context['params'].get('resource', {}).get('ckan_resource_id')
-    bq_import_csv(bq_table_id, gc_file_url, schema, ckan_conf)
+    dag_run_id = context['dag_run'].run_id
+    res_id = ckan_conf.get('resource_id')
+    try:
+        bq_import_csv(bq_table_id, gc_file_url, schema, ckan_conf)
+        status_dict = {
+        'dag_run_id': dag_run_id,
+        'resource_id': res_id,
+        'state': 'complete',
+        'message': 'Data ingestion completed successfully for "{res_id}".'.format(
+                    res_id=res_id),
+        'clear_logs': True
+        }
+        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
+    except Exception as e:
+        status_dict = {
+        'dag_run_id': dag_run_id,
+        'resource_id': res_id,
+        'state': 'failed',
+        'message': str(e),
+        'clear_logs': True
+        }
+        aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
+        raise Exception(str(e))
 
 import_resource_to_bq_task = PythonOperator(
     task_id='import_resource_to_bq_v2',

@@ -6,8 +6,7 @@ import ast
 from datetime import date, datetime
 
 # Local imports
-from aircan.dependencies.google_cloud.bigquery_handler_v2 import bq_import_csv
-from aircan.dependencies.utils import aircan_status_update_nhs as aircan_status_update
+from aircan.dependencies.google_cloud.bigquery_handler import bq_import_csv
 
 # Third-party library imports
 from airflow import DAG
@@ -16,7 +15,7 @@ from airflow.exceptions import AirflowException
 from airflow.models import Variable
 from airflow.operators.python_operator import PythonOperator
 from airflow.utils.dates import days_ago
-import traceback
+
 
 args = {
     'start_date': days_ago(0),
@@ -42,14 +41,12 @@ args = {
 }
 
 dag = DAG(
-    dag_id='ckan_api_import_to_bq_v2',
+    dag_id='ckan_api_import_to_bq',
     default_args=args,
     schedule_interval=None
 )
 
 def task_import_resource_to_bq(**context):
-    ckan_api_key = context['params'].get('ckan_config', {}).get('api_key')
-    ckan_site_url = context['params'].get('ckan_config', {}).get('site_url')
     logging.info('Invoking import resource to bigquery')
     logging.info("resource: {}".format(context['params'].get('resource', {})))
 
@@ -61,8 +58,7 @@ def task_import_resource_to_bq(**context):
     
     raw_schema = context['params'].get('resource', {}).get('schema')
     eval_schema = json.loads(raw_schema)
-    if isinstance(eval_schema, str):
-        eval_schema = ast.literal_eval(eval_schema)
+    eval_schema = ast.literal_eval(eval_schema)
     schema = eval_schema.get('fields')
     logging.info("SCHEMA: {}".format(schema))
 
@@ -71,22 +67,10 @@ def task_import_resource_to_bq(**context):
     logging.info('Importing %s to BQ %s' % (gc_file_url, bq_table_id))
     ckan_conf = context['params'].get('ckan_config', {})
     ckan_conf['resource_id'] = context['params'].get('resource', {}).get('ckan_resource_id')
-    dag_run_id = context['run_id']
-    res_id = ckan_conf.get('resource_id')
-    ckan_conf['dag_run_id'] = dag_run_id
     bq_import_csv(bq_table_id, gc_file_url, schema, ckan_conf)
-    status_dict = {
-    'dag_run_id': dag_run_id,
-    'resource_id': res_id,
-    'state': 'complete',
-    'message': 'Data ingestion completed successfully for "{res_id}".'.format(
-                res_id=res_id),
-    'clear_logs': True
-    }
-    aircan_status_update(ckan_site_url, ckan_api_key, status_dict)
 
 import_resource_to_bq_task = PythonOperator(
-    task_id='import_resource_to_bq_v2',
+    task_id='import_resource_to_bq',
     provide_context=True,
     python_callable=task_import_resource_to_bq,
     dag=dag,

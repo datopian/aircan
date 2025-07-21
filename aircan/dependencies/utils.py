@@ -72,6 +72,42 @@ def days_ago(n, hour=0, minute=0, second=0, microsecond=0):
         time(hour, minute, second, microsecond, tzinfo=timezone.TIMEZONE),
     )
 
+def aircan_status_update_nhs (site_url, ckan_api_key, status_dict):
+    """
+    Update aircan run status like pending, error, process, complete 
+    on ckan with message.
+    """
+    logging.info('Updating data loading status')
+    try:
+        request_data = { 
+            'dag_run_id': status_dict.get('dag_run_id', ''),
+            'resource_id': status_dict.get('res_id', ''),
+            'state': status_dict.get('state', ''),
+            'last_updated': str(datetime.utcnow()),
+            'message': status_dict.get('message', ''),
+        }
+
+        if status_dict.get('error', False):
+            request_data.update({'error': {
+                'message' : status_dict.get('error', '')
+            }})
+
+        url = urljoin(site_url, '/api/3/action/aircan_status_update')
+        response = requests.post(url,
+                        data=json.dumps(request_data),
+                        headers={'Content-Type': 'application/json',
+                                'Authorization': ckan_api_key})
+        print(response.text)
+        if response.status_code == 200:
+            resource_json = response.json()
+            logging.info('Loading status updated successfully in CKAN.')
+            return {'success': True}
+        else:
+            print(response.json())
+            return response.json()
+    except Exception as e:
+        logging.error('Failed to update status in CKAN. {0}'.format(e))
+
 def aircan_status_update(site_url, ckan_api_key, status_dict):
     """
     Update aircan run status like pending, error, process, complete 

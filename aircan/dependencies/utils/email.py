@@ -13,6 +13,17 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     error_message = error_payload.get("message", "")
     error_json = json.dumps(error_payload, indent=2)
+    message_row = (
+        f"""
+                <tr>
+                  <td style="padding:8px 0;border-bottom:1px solid #e5e7eb;">
+                    <span style="color:#6b7280;font-size:13px;display:block;">Message</span>
+                    <span style="color:#111827;font-size:15px;">{error_message}</span>
+                  </td>
+                </tr>"""
+        if error_message
+        else ""
+    )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -51,13 +62,7 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
                     <span style="color:#111827;font-size:15px;">{timestamp}</span>
                   </td>
                 </tr>
-                {"" if not error_message else f"""
-                <tr>
-                  <td style="padding:8px 0;border-bottom:1px solid #e5e7eb;">
-                    <span style="color:#6b7280;font-size:13px;display:block;">Message</span>
-                    <span style="color:#111827;font-size:15px;">{error_message}</span>
-                  </td>
-                </tr>"""}
+                {message_row}
               </table>
             </td>
           </tr>

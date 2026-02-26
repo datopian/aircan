@@ -16,8 +16,9 @@ import requests
 from airflow import DAG
 from airflow.sdk import task, get_current_context
 from airflow.task.trigger_rule import TriggerRule
-from airflow.exceptions import AirflowException
-from airflow.hooks.base import BaseHook
+from airflow.exceptions import AirflowException, AirflowSkipException
+from airflow.sdk.bases.hook import BaseHook
+from airflow.sdk import ObjectStoragePath
 
 from frictionless import Resource, Schema, system
 from google.cloud import bigquery
@@ -42,7 +43,6 @@ from aircan.dependencies.cloud.storage import (
     gcs_object_name,
     stream_http_to_gcs,
     upload_source_to_gcs,
-    delete_gcs_object,
     gcs_signed_url,
 )
 from aircan.dependencies.cloud.warehouse import (
@@ -88,10 +88,11 @@ DEFAULT_PARAMS = {
         "chunk_size": 8388608,
         "signed_url_expiration_seconds": 900,
     },
-    "others_config": {
+    "othesr_config": {
         "skip_leading_rows": 1,
         "temp_table_prefix": "_temp_",
         "infer_schema": True,
+        "validate_records": False,
         "notification_to_email": ["example@gmail.com"],
         "notification_from_email": "sender@gmail.com",
     },
@@ -144,10 +145,10 @@ def _notify_failure(context: Dict[str, Any]) -> None:
 
     resource_id = params.get("resource", {}).get("id", "unknown")
     site_id = params.get("ckan_config", {}).get("site_id", "")
-    notification_to_email = params.get("other_config", {}).get(
+    notification_to_email = params.get("others_config", {}).get(
         "notification_to_email", []
     )
-    notification_from_email = params.get("other_config", {}).get(
+    notification_from_email = params.get("others_config", {}).get(
         "notification_from_email", ""
     )
 
@@ -195,7 +196,6 @@ def collect_config_task() -> Dict[str, Any]:
 def upload_to_gcs_task() -> Dict[str, Any]:
     ctx = get_current_context()
     ti = ctx["ti"]
-    print(ti)
     config: Dict[str, Any] = ti.xcom_pull(task_ids="collect_config_task")
 
     ckan_status_update_async(
@@ -204,7 +204,7 @@ def upload_to_gcs_task() -> Dict[str, Any]:
 
     resource_dict = config.get("resource", {})
     gcs_config = config.get("gcs_config", {})
-    other_config = config.get("other_config", {})
+    others_config = config.get("others_config", {})
 
     file_source = resource_dict.get("url")
     resource_id = resource_dict.get("id")
@@ -216,7 +216,7 @@ def upload_to_gcs_task() -> Dict[str, Any]:
     conn_id = f"{site_id}_google_cloud"
     project_id = gcs_config.get("project_id")
     bucket = gcs_config.get("bucket")
-    chunk_size = other_config.get("chunk_size", DEFAULT_CHUNK_SIZE)
+    chunk_size = others_config.get("chunk_size", DEFAULT_CHUNK_SIZE)
     timeout_seconds = int(gcs_config.get("upload_ready_timeout_seconds", 120))
 
     storage_client = gcs_client(conn_id)
@@ -236,7 +236,6 @@ def upload_to_gcs_task() -> Dict[str, Any]:
     return {
         "gcs_uri": gcs_uri,
         "compression": compression,
-        "object_name": object_name,
     }
 
 
@@ -267,7 +266,7 @@ def infer_schema_task() -> Dict[str, Any]:
     bucket = gcs_config.get("bucket")
 
     expiration_seconds = gcs_config.get("signed_url_expiration_seconds", 900)
-    object_name = upload_result.get("object_name")
+    object_name = urlparse(upload_result["gcs_uri"]).path.lstrip("/")
 
     storage_client = gcs_client(conn_id)
 
@@ -286,26 +285,31 @@ def infer_schema_task() -> Dict[str, Any]:
     return result
 
 
-@task(task_id="validate_csv_task")
-def validate_csv_task() -> None:
+@task(task_id="validate_records_task")
+def validate_records_task() -> None:
     ctx = get_current_context()
     ti = ctx["ti"]
     config: Dict[str, Any] = ti.xcom_pull(task_ids="collect_config_task")
     upload_result: Dict[str, Any] = ti.xcom_pull(task_ids="upload_to_gcs_task")
     schema_descriptor: Dict[str, Any] = ti.xcom_pull(task_ids="infer_schema_task")
 
+    others_config = config.get("others_config", {})
+
+    if not others_config.get("validate_records", False):
+        logger.info("Records validation skipped — set others_config.validate_records=true to enable")
+        raise AirflowSkipException("Validation disabled in params")
+
     ckan_status_update_async(
         config, state="running", message="Validating CSV file against schema"
     )
 
     gcs_config = config.get("gcs_config", {})
-    other_config = config.get("other_config", {})
 
     site_id = config.get("ckan_config", {}).get("site_id", "")
     conn_id = f"{site_id}_google_cloud"
     bucket = gcs_config.get("bucket")
     expiration_seconds = gcs_config.get("signed_url_expiration_seconds", 900)
-    object_name = upload_result.get("object_name")
+    object_name = urlparse(upload_result["gcs_uri"]).path.lstrip("/")
 
     storage_client = gcs_client(conn_id)
 
@@ -341,7 +345,7 @@ def validate_csv_task() -> None:
     logger.info("CSV validation completed successfully")
 
 
-@task.branch
+@task.branch(trigger_rule=TriggerRule.NONE_FAILED)
 def branch_write_method() -> str:
     ctx = get_current_context()
     ti = ctx["ti"]
@@ -424,19 +428,19 @@ def upsert_table_task() -> None:
     )
     resource_dict = config.get("resource", {})
     gcs_config = config.get("gcs_config", {})
-    other_config = config.get("other_config", {})
+    others_config = config.get("others_config", {})
 
     resource_id = resource_dict.get("id")
     unique_keys = extract_unique_keys_from_schema(schema_descriptor)
 
-    skip_leading_rows = int(other_config.get("skip_leading_rows", 1))
+    skip_leading_rows = int(others_config.get("skip_leading_rows", 1))
 
     site_id = config.get("ckan_config", {}).get("site_id", "")
     conn_id = f"{site_id}_google_cloud"
     project_id = gcs_config.get("project_id")
     dataset_id = gcs_config.get("dataset_id")
 
-    temp_table_prefix = other_config.get("temp_table_prefix", "_temp_")
+    temp_table_prefix = others_config.get("temp_table_prefix", "_temp_")
 
     client = bq_client(conn_id, project_id)
     ensure_dataset_exists(client, project_id, dataset_id)
@@ -474,14 +478,11 @@ def cleanup_gcs_task() -> None:
         config, state="running", message="Cleanup: deleting temp GCS object"
     )
 
-    gcs_config = config.get("gcs_config", {})
-
     site_id = config.get("ckan_config", {}).get("site_id", "")
     conn_id = f"{site_id}_google_cloud"
-    gcs_bucket = gcs_config.get("bucket")
 
-    storage_client = gcs_client(conn_id)
-    delete_gcs_object(storage_client, gcs_bucket, upload_result["object_name"])
+    gcs_path = ObjectStoragePath(upload_result["gcs_uri"], conn_id=conn_id)
+    gcs_path.unlink()
 
     ckan_status_update_async(
         config, state="running", message="Cleanup completed — awaiting final status"
@@ -501,7 +502,7 @@ with DAG(
     upload = upload_to_gcs_task()
 
     schema = infer_schema_task()
-    validate = validate_csv_task()
+    validate = validate_records_task()
 
     branch_write_method = branch_write_method()
     append = overwrite_or_append_table_task()

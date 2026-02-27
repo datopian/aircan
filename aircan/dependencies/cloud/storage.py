@@ -1,16 +1,19 @@
 """Google Cloud Storage utilities."""
 
+import csv
 import logging
 import os
 import tempfile
 from datetime import timedelta
-from typing import Tuple
+from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 import requests
 from google.cloud import storage
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 
 
 def is_http_url(value: str) -> bool:
@@ -33,6 +36,66 @@ def gcs_object_name(source: str, resource_id: str, gcs_prefix: str) -> str:
     """Generate GCS object name from source and resource ID."""
     filename = filename_from_source(source).replace("/", "_")
     return f"{gcs_prefix}/{resource_id}/{filename}"
+
+
+def download_http_to_file(
+    http_url: str,
+    dest_path: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    api_key: Optional[str] = None,
+) -> None:
+    """Download HTTP URL to a local file path in chunks."""
+    headers = {"Authorization": api_key} if api_key else {}
+    with requests.get(http_url, stream=True, headers=headers, timeout=(10, 1200)) as response:
+        response.raise_for_status()
+        with open(dest_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    f.write(chunk)
+    logger.info("Downloaded: %s -> %s", http_url, dest_path)
+
+
+def upload_file_to_gcs(
+    storage_client,
+    local_path: str,
+    bucket_name: str,
+    object_name: str,
+) -> str:
+    """Upload a local file to GCS and return the gs:// URI."""
+    blob = storage_client.bucket(bucket_name).blob(object_name)
+    blob.upload_from_filename(local_path)
+    blob.reload()
+    logger.info(
+        "Uploaded: %s -> gs://%s/%s (%d bytes)",
+        local_path,
+        bucket_name,
+        object_name,
+        blob.size,
+    )
+    return f"gs://{bucket_name}/{object_name}"
+
+
+def _add_row_number_to_csv(
+    src_path: str,
+    dst_path: str,
+    column_name: str,
+    start: int = 1,
+) -> None:
+    """Read CSV at src_path, prepend a row number column starting at `start`, write to dst_path."""
+    with open(src_path, "r", newline="", encoding="utf-8") as infile, open(
+        dst_path, "w", newline="", encoding="utf-8"
+    ) as outfile:
+        reader = csv.reader(infile)
+        writer = csv.writer(outfile)
+        for i, row in enumerate(reader):
+            if i == 0:
+                writer.writerow([column_name] + row)
+            else:
+                writer.writerow([start + i - 1] + row)
+    logger.info(
+        "Added row number column '%s' (start=%d): %s -> %s",
+        column_name, start, src_path, dst_path,
+    )
 
 
 def stream_http_to_gcs(

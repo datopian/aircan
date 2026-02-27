@@ -13,6 +13,7 @@ from airflow.task.trigger_rule import TriggerRule
 from airflow.exceptions import AirflowException
 from airflow.sdk.bases.hook import BaseHook
 from airflow.sdk import ObjectStoragePath
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 
 from frictionless import Resource
 from google.cloud import bigquery
@@ -23,11 +24,13 @@ from aircan.dependencies.utils.schema import (
     extract_unique_keys_from_schema,
     schema_fields_from_descriptor,
 )
-from aircan.dependencies.cloud.clients import bq_client, gcs_client
+from aircan.dependencies.cloud.clients import bq_client, gcs_client, s3_client
 from aircan.dependencies.cloud.storage import (
     gcs_object_name,
+    filename_from_resource,
     download_http_to_file,
     upload_file_to_gcs,
+    upload_gcs_to_s3,
     _add_row_number_to_csv,
 )
 from aircan.dependencies.cloud.warehouse import (
@@ -35,6 +38,7 @@ from aircan.dependencies.cloud.warehouse import (
     ensure_dataset_exists,
     append_or_overwrite_flow,
     upsert_flow,
+    export_bq_to_gcs,
 )
 from aircan.dependencies.utils.ckan import ckan_status_update_async
 from aircan.dependencies.utils.email import send_email, build_alert_html
@@ -47,7 +51,7 @@ DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 
 DEFAULT_PARAMS = {
     "resource": {
-        "resource_id": "63b3d77e-032f-4ef0-8790-cc81d0509d5f",
+        "id": "63b3d77e-032f-4ef0-8790-cc81d0509d5f",
         "url": "https://example.com/dataset/266c57d5-ea6a-4b16-89e6-2f9e072f333d/resource/c8efed04-7100-4d85-9615-c6f12a7abe18/download/date.csv",
         "schemas": {},
         "ingestion_method": "overwrite",
@@ -66,10 +70,16 @@ DEFAULT_PARAMS = {
         "skip_leading_rows": 1,
         "temp_table_prefix": "_temp_",
         "validate_records": False,
-        "row_number_column": "_row",
-        "record_updated_at_column": "record_updated_at",
+        "row_number_column": "_id",
+        "record_updated_at_column": "_updated_at",
         "notification_to_email": ["example@gmail.com"],
         "notification_from_email": "sender@gmail.com",
+    },
+    "s3_config": {
+        "conn_id": "aws_default",
+        "bucket": "my-s3-export-bucket",
+        "key_prefix": "ckan-exports/",
+        "endpoint_url": "",
     },
 }
 
@@ -86,6 +96,7 @@ DEFAULT_ARGS = {
 # Helpers
 # ----------------------------
 
+
 def _row_number_start(
     conn_id: str, project_id: str, target_fqn: str, column: str, ingestion_method: str
 ) -> int:
@@ -93,16 +104,30 @@ def _row_number_start(
     if ingestion_method not in ("append", "upsert"):
         return 1
     try:
-        result = bq_client(conn_id, project_id).query(
-            f"SELECT COALESCE(MAX(`{column}`), 0) AS max_rn FROM `{target_fqn}`"
-        ).result()
+        result = (
+            bq_client(conn_id, project_id)
+            .query(f"SELECT COALESCE(MAX(`{column}`), 0) AS max_rn FROM `{target_fqn}`")
+            .result()
+        )
         for row in result:
             return int(row.max_rn) + 1
     except Exception:
         logger.warning(
-            "Could not query MAX(%s) from %s — starting at 1", column, target_fqn, exc_info=True
+            "Could not query MAX(%s) from %s — starting at 1",
+            column,
+            target_fqn,
+            exc_info=True,
         )
     return 1
+
+
+def _get_task_context() -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Pull config and prepare_result from XCom for the current task."""
+    ctx = get_current_context()
+    ti = ctx["ti"]
+    config = ti.xcom_pull(task_ids="collect_config_task") or {}
+    prepare_result = ti.xcom_pull(task_ids="prepare_and_upload_task") or {}
+    return config, prepare_result
 
 
 def _build_schema_fields(
@@ -111,7 +136,9 @@ def _build_schema_fields(
     """Build BQ schema fields, prepending the row number column as INT64 if set."""
     fields = schema_fields_from_descriptor(schema_descriptor)
     if row_number_column:
-        fields = [bigquery.SchemaField(row_number_column, "INT64", mode="NULLABLE")] + fields
+        fields = [
+            bigquery.SchemaField(row_number_column, "INT64", mode="NULLABLE")
+        ] + fields
     return fields
 
 
@@ -119,9 +146,12 @@ def _build_schema_fields(
 # Airflow callbacks
 # ----------------------------
 
+
 def dag_success_callback(context: Dict[str, Any]) -> None:
     ckan_status_update_async(
-        context.get("params"), state="success", message="Pipeline completed successfully"
+        context.get("params"),
+        state="success",
+        message="Pipeline completed successfully",
     )
 
 
@@ -142,7 +172,9 @@ def _notify_failure(context: Dict[str, Any]) -> None:
     try:
         ckan_status_update_async(params, state="failed", message=error_payload)
     except Exception:
-        logger.warning("CKAN status update raised unexpectedly; continuing.", exc_info=True)
+        logger.warning(
+            "CKAN status update raised unexpectedly; continuing.", exc_info=True
+        )
 
     resource_id = params.get("resource", {}).get("id", "unknown")
     site_id = params.get("ckan_config", {}).get("site_id", "")
@@ -160,7 +192,9 @@ def _notify_failure(context: Dict[str, Any]) -> None:
 def dag_run_failure_callback(context: Dict[str, Any]) -> None:
     dag_run = context.get("dag_run")
     if dag_run and dag_run.get_task_instances(state="failed"):
-        logger.info("DAG-level callback skipped — task-level callback already handled it.")
+        logger.info(
+            "DAG-level callback skipped — task-level callback already handled it."
+        )
         return
     _notify_failure(context)
 
@@ -169,11 +203,16 @@ def dag_run_failure_callback(context: Dict[str, Any]) -> None:
 # Tasks
 # ----------------------------
 
+
 @task(task_id="collect_config_task")
 def collect_config_task() -> Dict[str, Any]:
     context = get_current_context()
     params = context.get("params")
-    ckan_status_update_async(params, state="running", message="Pipeline is running preparing the configuration")
+    ckan_status_update_async(
+        params,
+        state="running",
+        message="Pipeline is running preparing the configuration",
+    )
     return dict(params)
 
 
@@ -214,8 +253,10 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     conn_id = f"{site_id}_google_cloud"
     bucket = gcs_config.get("bucket")
     chunk_size = gcs_config.get("chunk_size", DEFAULT_CHUNK_SIZE)
-    row_number_column = merged_others.get("row_number_column") or "_row"
-    record_updated_at_column = merged_others.get("record_updated_at_column") or "record_updated_at"
+    row_number_column = merged_others.get("row_number_column") or "_id"
+    record_updated_at_column = (
+        merged_others.get("record_updated_at_column") or "_updated_at"
+    )
     validate_records = merged_others.get("validate_records", False)
 
     compression = "GZIP" if file_source.lower().endswith(".gz") else "NONE"
@@ -235,47 +276,77 @@ def prepare_and_upload_task() -> Dict[str, Any]:
 
     try:
         # Step 1: Download
-        ckan_status_update_async(config, state="running", message="Downloading CSV file")
+        ckan_status_update_async(
+            config, state="running", message="Downloading CSV file"
+        )
         download_http_to_file(file_source, tmp_path, chunk_size, ckan_api_key)
 
         # Step 2: Schema
         if schemas:
-            descriptor = _sanitize_frictionless_descriptor(_load_frictionless_descriptor(schemas))
+            descriptor = _sanitize_frictionless_descriptor(
+                _load_frictionless_descriptor(schemas)
+            )
         else:
             fr_resource = Resource(path=tmp_path)
             fr_resource.infer()
-            descriptor = _sanitize_frictionless_descriptor(fr_resource.schema.to_descriptor())
+            descriptor = _sanitize_frictionless_descriptor(
+                fr_resource.schema.to_descriptor()
+            )
         logger.info("Schema ready: %d fields", len(descriptor.get("fields", [])))
 
         # Step 3: Validate (optional)
         if validate_records:
-            ckan_status_update_async(config, state="running", message="Validating CSV records")
-            report = validate_csv(source_file=tmp_path, schema=descriptor, limit_rows=None, limit_errors=1000)
+            ckan_status_update_async(
+                config, state="running", message="Validating CSV records"
+            )
+            report = validate_csv(
+                source_file=tmp_path,
+                schema=descriptor,
+                limit_rows=None,
+                limit_errors=1000,
+            )
             if not report.valid:
                 report_dict = report.to_dict()
                 task_stats = ((report_dict.get("tasks") or [{}])[0]).get("stats", {})
                 total_rows = report.stats.get("rows") or task_stats.get("rows", 0)
                 total_errors = report.stats.get("errors") or task_stats.get("errors", 0)
-                raise AirflowException(json.dumps({
-                    "message": "Records validation failed. rows=%d errors=%d" % (total_rows, total_errors),
-                    "report": report_dict,
-                }))
+                raise AirflowException(
+                    json.dumps(
+                        {
+                            "message": "Records validation failed. rows=%d errors=%d"
+                            % (total_rows, total_errors),
+                            "report": report_dict,
+                        }
+                    )
+                )
             logger.info("CSV validation passed")
         else:
-            logger.info("Validation skipped — set others_config.validate_records=true to enable")
+            logger.info(
+                "Validation skipped — set others_config.validate_records=true to enable"
+            )
 
         # Step 4: Add _row column
         project_id = gcs_config.get("project_id")
         dataset_id = gcs_config.get("dataset_id")
         target_fqn = table_fqn(project_id, dataset_id, resource_id)
-        start = _row_number_start(conn_id, project_id, target_fqn, row_number_column, ingestion_method)
-        logger.info("%s mode: %s starts at %d", ingestion_method, row_number_column, start)
+        start = _row_number_start(
+            conn_id, project_id, target_fqn, row_number_column, ingestion_method
+        )
+        logger.info(
+            "%s mode: %s starts at %d", ingestion_method, row_number_column, start
+        )
         _add_row_number_to_csv(tmp_path, processed_path, row_number_column, start=start)
 
         # Step 5: Upload to GCS
-        ckan_status_update_async(config, state="running", message="Uploading processed CSV to GCS")
-        gcs_uri = upload_file_to_gcs(storage_client, processed_path, bucket, object_name)
-        ckan_status_update_async(config, state="running", message=f"CSV uploaded: {gcs_uri}")
+        ckan_status_update_async(
+            config, state="running", message="Uploading processed CSV to GCS"
+        )
+        gcs_uri = upload_file_to_gcs(
+            storage_client, processed_path, bucket, object_name
+        )
+        ckan_status_update_async(
+            config, state="running", message=f"CSV uploaded: {gcs_uri}"
+        )
 
         return {
             "gcs_uri": gcs_uri,
@@ -295,14 +366,13 @@ def prepare_and_upload_task() -> Dict[str, Any]:
 
 @task.branch(trigger_rule=TriggerRule.NONE_FAILED)
 def branch_write_method() -> str:
-    ctx = get_current_context()
-    ti = ctx["ti"]
-    config: Dict[str, Any] = ti.xcom_pull(task_ids="collect_config_task")
-    prepare_result: Dict[str, Any] = ti.xcom_pull(task_ids="prepare_and_upload_task")
+    config, prepare_result = _get_task_context()
 
     method = config.get("resource", {}).get("ingestion_method")
     if method == "upsert":
-        unique_keys = extract_unique_keys_from_schema(prepare_result.get("schema_descriptor", {}))
+        unique_keys = extract_unique_keys_from_schema(
+            prepare_result.get("schema_descriptor", {})
+        )
         if not unique_keys:
             raise RuntimeError("No unique keys specified for upsert ingestion method.")
         return "upsert_table_task"
@@ -311,10 +381,7 @@ def branch_write_method() -> str:
 
 @task(task_id="overwrite_or_append_table_task")
 def overwrite_or_append_table_task() -> None:
-    ctx = get_current_context()
-    ti = ctx["ti"]
-    config: Dict[str, Any] = ti.xcom_pull(task_ids="collect_config_task")
-    prepare_result: Dict[str, Any] = ti.xcom_pull(task_ids="prepare_and_upload_task")
+    config, prepare_result = _get_task_context()
 
     resource_dict = config.get("resource", {})
     gcs_config = config.get("gcs_config", {})
@@ -341,20 +408,21 @@ def overwrite_or_append_table_task() -> None:
         prepare_result["compression"],
         table_fqn(project_id, dataset_id, resource_id),
         write_method,
-        _build_schema_fields(prepare_result["schema_descriptor"], prepare_result.get("row_number_column")),
+        _build_schema_fields(
+            prepare_result["schema_descriptor"], prepare_result.get("row_number_column")
+        ),
         skip_leading_rows,
         record_updated_at_column=prepare_result.get("record_updated_at_column"),
         job_timestamp=datetime.now(timezone.utc),
     )
-    ckan_status_update_async(config, state="running", message=f"{write_method.capitalize()} complete")
+    ckan_status_update_async(
+        config, state="running", message=f"{write_method.capitalize()} complete"
+    )
 
 
 @task(task_id="upsert_table_task")
 def upsert_table_task() -> None:
-    ctx = get_current_context()
-    ti = ctx["ti"]
-    config: Dict[str, Any] = ti.xcom_pull(task_ids="collect_config_task")
-    prepare_result: Dict[str, Any] = ti.xcom_pull(task_ids="prepare_and_upload_task")
+    config, prepare_result = _get_task_context()
 
     resource_dict = config.get("resource", {})
     gcs_config = config.get("gcs_config", {})
@@ -393,15 +461,81 @@ def upsert_table_task() -> None:
 
 @task(task_id="cleanup_gcs", trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS)
 def cleanup_gcs_task() -> None:
-    ctx = get_current_context()
-    ti = ctx["ti"]
-    config: Dict[str, Any] = ti.xcom_pull(task_ids="collect_config_task") or {}
-    prepare_result: Dict[str, Any] = ti.xcom_pull(task_ids="prepare_and_upload_task") or {}
+    config, prepare_result = _get_task_context()
+    gcs_uri = prepare_result.get("gcs_uri")
+    if not gcs_uri:
+        logger.warning("cleanup_gcs_task: no gcs_uri in prepare_result — nothing to delete")
+        return
 
     site_id = config.get("ckan_config", {}).get("site_id", "")
-    ckan_status_update_async(config, state="running", message="Cleanup: deleting temp GCS object")
-    ObjectStoragePath(prepare_result["gcs_uri"], conn_id=f"{site_id}_google_cloud").unlink()
-    ckan_status_update_async(config, state="running", message="Cleanup completed — awaiting final status")
+    ckan_status_update_async(
+        config, state="running", message="Cleanup: deleting temp GCS object"
+    )
+    ObjectStoragePath(gcs_uri, conn_id=f"{site_id}_google_cloud").unlink()
+    ckan_status_update_async(
+        config, state="running", message="Cleanup completed — awaiting final status"
+    )
+
+
+@task(task_id="export_and_publish_task", trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS)
+def export_and_publish_task() -> None:
+    """
+    Final publish step:
+      1. Export the target table to GCS as CSV (sorted by row_number_column)
+      2. Upload exported CSV file(s) from GCS to S3
+      3. Clean up the GCS export files
+    S3 export is skipped if s3_config.bucket is not set.
+    """
+    config, prepare_result = _get_task_context()
+
+    resource_dict = config.get("resource", {})
+    gcs_config = config.get("gcs_config", {})
+    s3_config = config.get("s3_config") or {}
+
+    resource_id = resource_dict.get("id")
+    project_id = gcs_config.get("project_id")
+    dataset_id = gcs_config.get("dataset_id")
+    site_id = config.get("ckan_config", {}).get("site_id", "")
+    gcs_conn_id = f"{site_id}_google_cloud"
+    row_number_column = prepare_result.get("row_number_column")
+
+    target_fqn_str = table_fqn(project_id, dataset_id, resource_id)
+
+    bq = bq_client(gcs_conn_id, project_id)
+    gcs = gcs_client(gcs_conn_id)
+
+    # Export table → GCS → S3 (optional)
+    s3_bucket = s3_config.get("bucket")
+    if not s3_bucket:
+        logger.info("No s3_config.bucket configured — skipping S3 export")
+        return
+
+    s3_conn_id = s3_config.get("conn_id") or f"{site_id}_s3"
+    s3_key_prefix = s3_config.get("key_prefix", "")
+    gcs_bucket = gcs_config.get("bucket")
+    resource_filename = filename_from_resource(resource_dict)
+    export_gcs_uri = f"gs://{gcs_bucket}/exports/{resource_id}/{resource_filename}"
+    s3_key = f"{s3_key_prefix.rstrip('/')}/{resource_filename}"
+
+    ckan_status_update_async(config, state="running", message="Exporting table to GCS")
+    export_bq_to_gcs(bq, target_fqn_str, export_gcs_uri, order_by_column=row_number_column)
+
+    hook = S3Hook(aws_conn_id=s3_conn_id)
+    creds = hook.get_credentials()
+    s3 = s3_client(
+        access_key_id=creds.access_key,
+        secret_access_key=creds.secret_key,
+        endpoint_url=s3_config.get("endpoint_url") or None,
+        region_name=s3_config.get("region") or None,
+    )
+    ckan_status_update_async(config, state="running", message="Uploading export to S3")
+    s3_uri = upload_gcs_to_s3(gcs, export_gcs_uri, s3, s3_bucket, s3_key)
+    logger.info("Uploaded to S3: %s", s3_uri)
+    ckan_status_update_async(
+        config,
+        state="running",
+        message=f"Export complete — {s3_uri}",
+    )
 
 
 with DAG(
@@ -419,7 +553,8 @@ with DAG(
     append = overwrite_or_append_table_task()
     upsert = upsert_table_task()
     cleanup = cleanup_gcs_task()
+    publish = export_and_publish_task()
 
     config >> prepare >> branch
     branch >> [append, upsert]
-    [append, upsert] >> cleanup
+    [append, upsert] >> publish >> cleanup

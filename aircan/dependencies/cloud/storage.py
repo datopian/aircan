@@ -25,16 +25,30 @@ def is_http_url(value: str) -> bool:
         return False
 
 
-def filename_from_source(source: str) -> str:
-    """Extract filename from source URL or path."""
-    if is_http_url(source):
-        return unquote(os.path.basename(urlparse(source).path)) or "input.csv"
-    return os.path.basename(source) or "input.csv"
+def filename_from_resource(resource_dict: dict) -> str:
+    """Return the export filename for a resource.
+
+    Uses the filename from the resource URL if available,
+    falls back to resource_id.csv.
+    """
+    resource_id = resource_dict.get("id") or "unknown"
+    url = resource_dict.get("url", "")
+    name = (
+        unquote(os.path.basename(urlparse(url).path))
+        if is_http_url(url)
+        else os.path.basename(url)
+    )
+    return name or f"{resource_id}.csv"
 
 
 def gcs_object_name(source: str, resource_id: str, gcs_prefix: str) -> str:
     """Generate GCS object name from source and resource ID."""
-    filename = filename_from_source(source).replace("/", "_")
+    name = (
+        unquote(os.path.basename(urlparse(source).path))
+        if is_http_url(source)
+        else os.path.basename(source)
+    )
+    filename = (name or resource_id).replace("/", "_")
     return f"{gcs_prefix}/{resource_id}/{filename}"
 
 
@@ -46,7 +60,9 @@ def download_http_to_file(
 ) -> None:
     """Download HTTP URL to a local file path in chunks."""
     headers = {"Authorization": api_key} if api_key else {}
-    with requests.get(http_url, stream=True, headers=headers, timeout=(10, 1200)) as response:
+    with requests.get(
+        http_url, stream=True, headers=headers, timeout=(10, 1200)
+    ) as response:
         response.raise_for_status()
         with open(dest_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=chunk_size):
@@ -94,7 +110,10 @@ def _add_row_number_to_csv(
                 writer.writerow([start + i - 1] + row)
     logger.info(
         "Added row number column '%s' (start=%d): %s -> %s",
-        column_name, start, src_path, dst_path,
+        column_name,
+        start,
+        src_path,
+        dst_path,
     )
 
 
@@ -108,7 +127,7 @@ def stream_http_to_gcs(
 ):
     """Stream HTTP URL directly to GCS bucket."""
     blob = storage_client.bucket(bucket_name).blob(object_name)
-    
+
     if api_key:
         headers = {"Authorization": f"{api_key}"}
     else:
@@ -152,6 +171,51 @@ def upload_source_to_gcs(
         storage_client, source, bucket, object_name, chunk_size, ckan_api_key
     )
     return gcs_uri, compression, object_name
+
+
+def upload_file_to_s3(
+    s3_client,
+    local_path: str,
+    s3_bucket: str,
+    s3_key: str,
+) -> str:
+    """Upload a local file to S3 and return its s3:// URI."""
+    s3_client.upload_file(local_path, s3_bucket, s3_key)
+    uri = f"s3://{s3_bucket}/{s3_key}"
+    logger.info("Uploaded: %s -> %s", local_path, uri)
+    return uri
+
+
+def upload_gcs_to_s3(
+    gcs_client,
+    gcs_uri: str,
+    s3_client,
+    s3_bucket: str,
+    s3_key: str,
+    delete_after_upload: bool = True,
+) -> str:
+    """Stream a single GCS object directly to S3.
+
+    gcs_uri: exact gs:// URI, e.g. gs://bucket/prefix/export.csv.
+    delete_after_upload: delete the GCS object after a successful upload (default True).
+    Returns the s3:// URI.
+    """
+    parsed = urlparse(gcs_uri)
+    gcs_bucket = parsed.netloc
+    blob_name = parsed.path.lstrip("/")
+
+    blob = gcs_client.bucket(gcs_bucket).blob(blob_name)
+    with blob.open("rb") as f:
+        s3_client.upload_fileobj(f, s3_bucket, s3_key)
+    uri = f"s3://{s3_bucket}/{s3_key}"
+    logger.info("Streamed %s -> %s", gcs_uri, uri)
+    if delete_after_upload:
+        try:
+            blob.delete()
+            logger.info("Deleted GCS export object: %s", gcs_uri)
+        except Exception as e:
+            logger.warning("GCS delete failed for %s: %s", gcs_uri, e)
+    return uri
 
 
 def delete_gcs_object(

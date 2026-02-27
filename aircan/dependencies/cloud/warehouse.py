@@ -276,6 +276,45 @@ def append_or_overwrite_flow(
     logger.info("Load complete into %s", target_fqn)
 
 
+def export_bq_to_gcs(
+    client: bigquery.Client,
+    source_fqn: str,
+    gcs_uri: str,
+    order_by_column: Optional[str] = None,
+) -> None:
+    """Export a BigQuery table to GCS as CSV (wildcard URI supported).
+
+    If order_by_column is set, rows are sorted via a short-lived temp table
+    (BQ extract_table does not support ORDER BY natively).
+    """
+    if order_by_column:
+        tmp_fqn = f"{source_fqn}_export_tmp"
+        logger.info("Creating sorted temp table %s ORDER BY %s", tmp_fqn, order_by_column)
+        client.query(
+            f"CREATE OR REPLACE TABLE `{tmp_fqn}` AS"
+            f" SELECT * FROM `{source_fqn}` ORDER BY `{order_by_column}` ASC"
+        ).result()
+        try:
+            _do_extract(client, tmp_fqn, gcs_uri)
+        finally:
+            client.delete_table(tmp_fqn, not_found_ok=True)
+            logger.info("Deleted temp export table: %s", tmp_fqn)
+    else:
+        _do_extract(client, source_fqn, gcs_uri)
+
+
+def _do_extract(client: bigquery.Client, table_fqn_str: str, gcs_uri: str) -> None:
+    job_config = bigquery.ExtractJobConfig(
+        destination_format=bigquery.DestinationFormat.CSV,
+        print_header=True,
+    )
+    job = client.extract_table(table_fqn_str, gcs_uri, job_config=job_config)
+    job.result()
+    if job.errors:
+        raise RuntimeError(f"BQ export job failed: {job.errors}")
+    logger.info("Exported %s -> %s", table_fqn_str, gcs_uri)
+
+
 def upsert_flow(
     client: bigquery.Client,
     gcs_uri: str,

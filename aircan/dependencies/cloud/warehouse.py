@@ -10,6 +10,49 @@ from google.cloud import bigquery
 logger = logging.getLogger(__name__)
 
 
+def get_row_number_start(
+    client: bigquery.Client, target_fqn: str, column: str, ingestion_method: str
+) -> int:
+    """Return the next row number start value for append/upsert (MAX + 1), or 1 otherwise."""
+    if ingestion_method not in ("append", "upsert"):
+        return 1
+    try:
+        result = client.query(
+            f"SELECT COALESCE(MAX(`{column}`), 0) AS max_rn FROM `{target_fqn}`"
+        ).result()
+        for row in result:
+            return int(row.max_rn) + 1
+    except Exception:
+        logger.exception(
+            "Could not query MAX(%s) from %s — starting at 1",
+            column,
+            target_fqn,
+        )
+    return 1
+
+
+def bq_destination_format(fmt: str) -> str:
+    """Map a canonical format string to a BigQuery DestinationFormat constant."""
+    return {
+        "json": bigquery.DestinationFormat.NEWLINE_DELIMITED_JSON,
+        "ndjson": bigquery.DestinationFormat.NEWLINE_DELIMITED_JSON,
+        "jsonl": bigquery.DestinationFormat.NEWLINE_DELIMITED_JSON,
+        "parquet": bigquery.DestinationFormat.PARQUET,
+        "tsv": bigquery.DestinationFormat.CSV,
+    }.get(fmt, bigquery.DestinationFormat.CSV)
+
+
+def export_file_ext(fmt: str) -> str:
+    """Return the export file extension for a given format string."""
+    return {
+        "json": "ndjson",
+        "ndjson": "ndjson",
+        "jsonl": "ndjson",
+        "parquet": "parquet",
+        "tsv": "csv",  # BQ exports as CSV; TSV was normalised to CSV at ingest
+    }.get(fmt, "csv")
+
+
 def table_fqn(project_id: str, dataset_id: str, table_name: str) -> str:
     """Generate fully qualified table name for BigQuery."""
     return f"{project_id}.{dataset_id}.{table_name}"
@@ -36,15 +79,32 @@ def load_gcs_to_bq_table(
     schema_fields: Optional[List[bigquery.SchemaField]] = None,
     allow_field_addition: bool = False,
     skip_leading_rows: int = 1,
+    source_format: str = "csv",
 ) -> None:
-    """Load CSV from GCS to BigQuery table."""
+    """Load data from GCS to BigQuery table.
+
+    source_format: canonical format string ("csv", "json", "ndjson", "jsonl", "parquet").
+    skip_leading_rows is only applied for CSV (ignored for JSON/Parquet).
+    """
+    _format_map = {
+        "csv": bigquery.SourceFormat.CSV,
+        "tsv": bigquery.SourceFormat.CSV,  # normalised to CSV at stream time
+        "json": bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        "ndjson": bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        "jsonl": bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        "parquet": bigquery.SourceFormat.PARQUET,
+    }
+    bq_source_format = _format_map.get(source_format.strip().lower())
+
     job_config = bigquery.LoadJobConfig(
-        source_format=bigquery.SourceFormat.CSV,
+        source_format=bq_source_format,
         autodetect=schema_fields is None,
-        skip_leading_rows=skip_leading_rows,
         write_disposition=write_disposition,
         create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED,
     )
+
+    if bq_source_format == bigquery.SourceFormat.CSV:
+        job_config.skip_leading_rows = skip_leading_rows
 
     if schema_fields is not None:
         job_config.schema = schema_fields
@@ -60,10 +120,11 @@ def load_gcs_to_bq_table(
         job_config._properties.setdefault("load", {})["compression"] = compression
 
     logger.info(
-        "BigQuery load start: source=%s dest=%s disposition=%s",
+        "BigQuery load start: source=%s dest=%s disposition=%s format=%s",
         source_uri,
         dest_fqn,
         write_disposition,
+        source_format,
     )
     job = client.load_table_from_uri(source_uri, dest_fqn, job_config=job_config)
     job.result()
@@ -166,7 +227,9 @@ def merge_upsert_anyvalue_dedup(
     # Data columns: excluded from UPDATE SET only if preserved; used for change detection.
     update_cols = [c for c in non_key_cols if c not in _preserve]
     if not update_cols:
-        raise RuntimeError("No columns left to update after excluding preserved columns.")
+        raise RuntimeError(
+            "No columns left to update after excluding preserved columns."
+        )
 
     on_clause = " AND ".join([f"T.`{k}` = S.`{k}`" for k in unique_keys])
 
@@ -182,8 +245,12 @@ def merge_upsert_anyvalue_dedup(
     update_set = ",\n        ".join(update_parts)
 
     # INSERT: all stage columns + record_updated_at (not in stage, set via param).
-    insert_col_names = cols + ([record_updated_at_column] if record_updated_at_column else [])
-    insert_val_exprs = [f"S.`{c}`" for c in cols] + (["@job_ts"] if record_updated_at_column else [])
+    insert_col_names = cols + (
+        [record_updated_at_column] if record_updated_at_column else []
+    )
+    insert_val_exprs = [f"S.`{c}`" for c in cols] + (
+        ["@job_ts"] if record_updated_at_column else []
+    )
     insert_cols = ", ".join([f"`{c}`" for c in insert_col_names])
     insert_vals = ", ".join(insert_val_exprs)
 
@@ -217,8 +284,15 @@ def merge_upsert_anyvalue_dedup(
         ts = job_timestamp or datetime.now(timezone.utc)
         query_params.append(bigquery.ScalarQueryParameter("job_ts", "TIMESTAMP", ts))
 
-    job_config = bigquery.QueryJobConfig(query_parameters=query_params) if query_params else None
-    logger.info("BigQuery MERGE start: target=%s stage=%s keys=%s", target_fqn, stage_fqn, unique_keys)
+    job_config = (
+        bigquery.QueryJobConfig(query_parameters=query_params) if query_params else None
+    )
+    logger.info(
+        "BigQuery MERGE start: target=%s stage=%s keys=%s",
+        target_fqn,
+        stage_fqn,
+        unique_keys,
+    )
     client.query(sql, job_config=job_config).result()
     logger.info("Upsert complete into %s", target_fqn)
 
@@ -229,10 +303,11 @@ def append_or_overwrite_flow(
     compression: str,
     target_fqn: str,
     write_method: str,
-    schema_fields: Optional[List[bigquery.SchemaField]],
+    schema_fields: dict,
     skip_leading_rows: int,
     record_updated_at_column: Optional[str] = None,
     job_timestamp: Optional[datetime] = None,
+    source_format: str = "csv",
 ) -> None:
     """Load data from GCS with append or overwrite disposition."""
     if schema_fields:
@@ -246,6 +321,7 @@ def append_or_overwrite_flow(
     allow_field_addition = disposition == bigquery.WriteDisposition.WRITE_APPEND
 
     logger.info("Loading into target: %s using %s", target_fqn, write_method)
+    
     load_gcs_to_bq_table(
         client=client,
         source_uri=gcs_uri,
@@ -255,25 +331,38 @@ def append_or_overwrite_flow(
         schema_fields=schema_fields,
         allow_field_addition=allow_field_addition,
         skip_leading_rows=skip_leading_rows,
+        source_format=source_format,
     )
 
     if record_updated_at_column:
         # Ensure column exists (WRITE_TRUNCATE recreates table without it).
-        ensure_table_has_fields(client, target_fqn, [
-            bigquery.SchemaField(record_updated_at_column, "TIMESTAMP", mode="NULLABLE")
-        ])
+        ensure_table_has_fields(
+            client,
+            target_fqn,
+            [
+                bigquery.SchemaField(
+                    record_updated_at_column, "TIMESTAMP", mode="NULLABLE"
+                )
+            ],
+        )
         ts = job_timestamp or datetime.now(timezone.utc)
         # For overwrite: all rows are new (NULL). For append: only newly inserted rows are NULL.
         client.query(
             f"UPDATE `{target_fqn}` SET `{record_updated_at_column}` = @ts"
             f" WHERE `{record_updated_at_column}` IS NULL",
-            job_config=bigquery.QueryJobConfig(query_parameters=[
-                bigquery.ScalarQueryParameter("ts", "TIMESTAMP", ts)
-            ]),
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("ts", "TIMESTAMP", ts)]
+            ),
         ).result()
         logger.info("Set %s for new rows in %s", record_updated_at_column, target_fqn)
 
     logger.info("Load complete into %s", target_fqn)
+
+
+def get_table_header(client: bigquery.Client, source_fqn: str) -> str:
+    """Return the CSV header row for a BigQuery table (comma-separated column names + newline)."""
+    table = client.get_table(source_fqn)
+    return ",".join(f.name for f in table.schema) + "\n"
 
 
 def export_bq_to_gcs(
@@ -281,33 +370,56 @@ def export_bq_to_gcs(
     source_fqn: str,
     gcs_uri: str,
     order_by_column: Optional[str] = None,
+    print_header: bool = True,
+    destination_format: str = bigquery.DestinationFormat.CSV,
 ) -> None:
-    """Export a BigQuery table to GCS as CSV (wildcard URI supported).
+    """Export a BigQuery table to GCS (wildcard URI supported).
 
+    destination_format: bigquery.DestinationFormat constant. Defaults to CSV.
+    print_header: Only applies to CSV exports.
     If order_by_column is set, rows are sorted via a short-lived temp table
     (BQ extract_table does not support ORDER BY natively).
     """
     if order_by_column:
         tmp_fqn = f"{source_fqn}_export_tmp"
-        logger.info("Creating sorted temp table %s ORDER BY %s", tmp_fqn, order_by_column)
+        logger.info(
+            "Creating sorted temp table %s ORDER BY %s", tmp_fqn, order_by_column
+        )
         client.query(
             f"CREATE OR REPLACE TABLE `{tmp_fqn}` AS"
             f" SELECT * FROM `{source_fqn}` ORDER BY `{order_by_column}` ASC"
         ).result()
         try:
-            _do_extract(client, tmp_fqn, gcs_uri)
+            _do_extract(
+                client,
+                tmp_fqn,
+                gcs_uri,
+                print_header=print_header,
+                destination_format=destination_format,
+            )
         finally:
             client.delete_table(tmp_fqn, not_found_ok=True)
             logger.info("Deleted temp export table: %s", tmp_fqn)
     else:
-        _do_extract(client, source_fqn, gcs_uri)
+        _do_extract(
+            client,
+            source_fqn,
+            gcs_uri,
+            print_header=print_header,
+            destination_format=destination_format,
+        )
 
 
-def _do_extract(client: bigquery.Client, table_fqn_str: str, gcs_uri: str) -> None:
-    job_config = bigquery.ExtractJobConfig(
-        destination_format=bigquery.DestinationFormat.CSV,
-        print_header=True,
-    )
+def _do_extract(
+    client: bigquery.Client,
+    table_fqn_str: str,
+    gcs_uri: str,
+    print_header: bool = True,
+    destination_format: str = bigquery.DestinationFormat.CSV,
+) -> None:
+    job_config = bigquery.ExtractJobConfig(destination_format=destination_format)
+    if destination_format == bigquery.DestinationFormat.CSV:
+        job_config.print_header = print_header
     job = client.extract_table(table_fqn_str, gcs_uri, job_config=job_config)
     job.result()
     if job.errors:
@@ -327,6 +439,7 @@ def upsert_flow(
     preserve_columns: Optional[List[str]] = None,
     record_updated_at_column: Optional[str] = None,
     job_timestamp: Optional[datetime] = None,
+    source_format: str = "csv",
 ) -> None:
     """Complete upsert flow: load stage, merge to target."""
     logger.info("Loading into staging: %s", stage_fqn)
@@ -338,10 +451,13 @@ def upsert_flow(
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         schema_fields=schema_fields,
         skip_leading_rows=skip_leading_rows,
+        source_format=source_format,
     )
     logger.info("Staging load complete")
 
-    unique_keys = resolve_unique_keys_from_stage(client, stage_fqn, unique_keys, debug=True)
+    unique_keys = resolve_unique_keys_from_stage(
+        client, stage_fqn, unique_keys, debug=True
+    )
     logger.info("Resolved UNIQUE_KEYS -> %s", unique_keys)
 
     ensure_target_exists_from_stage(client, target_fqn, stage_fqn)
@@ -350,13 +466,22 @@ def upsert_flow(
 
     # record_updated_at is not in the CSV/stage — ensure it exists on target before MERGE.
     if record_updated_at_column:
-        ensure_table_has_fields(client, target_fqn, [
-            bigquery.SchemaField(record_updated_at_column, "TIMESTAMP", mode="NULLABLE")
-        ])
+        ensure_table_has_fields(
+            client,
+            target_fqn,
+            [
+                bigquery.SchemaField(
+                    record_updated_at_column, "TIMESTAMP", mode="NULLABLE"
+                )
+            ],
+        )
 
     logger.info("Upserting into %s using UNIQUE_KEYS=%s", target_fqn, unique_keys)
     merge_upsert_anyvalue_dedup(
-        client, target_fqn, stage_fqn, unique_keys,
+        client,
+        target_fqn,
+        stage_fqn,
+        unique_keys,
         preserve_columns=preserve_columns,
         record_updated_at_column=record_updated_at_column,
         job_timestamp=job_timestamp,

@@ -1,6 +1,6 @@
 # DAG: `bq_load_from_csv`
 
-Loads a CSV resource from a CKAN instance into a Google BigQuery table via Google Cloud Storage (GCS). Supports three ingestion modes: **overwrite**, **append**, and **upsert**.
+Loads a resource from a CKAN instance into a Google BigQuery table via Google Cloud Storage (GCS). Supports CSV, TSV, JSON array, NDJSON/JSONL, and Parquet formats. Supports three ingestion modes: **overwrite**, **append**, and **upsert**. Optionally exports the final BigQuery table to S3.
 
 ## Prerequisites
 
@@ -15,9 +15,14 @@ To use the CKAN integration features (status updates and authenticated resource 
   - [resource](#resource)
   - [ckan\_config](#ckan_config)
   - [gcs\_config](#gcs_config)
-  - [other\_config](#other_config)
+  - [others\_config](#others_config)
+  - [s3\_config](#s3_config)
 - [Ingestion Methods](#ingestion-methods)
+- [Supported Formats](#supported-formats)
+- [Row Number Column](#row-number-column)
+- [Record Updated-At Column](#record-updated-at-column)
 - [Schema Handling](#schema-handling)
+- [S3 Export](#s3-export)
 - [Notifications](#notifications)
 - [Full Trigger Payload Example](#full-trigger-payload-example)
 
@@ -29,23 +34,19 @@ To use the CKAN integration features (status updates and authenticated resource 
 CKAN resource URL
       │
       ▼
-[upload_to_gcs_task]     ← streams CSV to GCS bucket
-      │
+[prepare_and_upload_task]  ← infers schema, optionally validates, injects row
+      │                       numbers, and streams file to GCS (all in one pass)
       ▼
-[infer_schema_task]      ← uses provided schema or infers from file
-      │
-      ▼
-[validate_csv_task]      ← validates rows against schema (frictionless)
-      │
-      ▼
-[branch_write_method]    ← routes to overwrite/append OR upsert
+[branch_write_method]      ← routes to overwrite/append OR upsert
       │
    ┌──┴──────────────────────┐
    ▼                         ▼
 [overwrite_or_append]    [upsert_table_task]
    └──────────┬──────────────┘
               ▼
-        [cleanup_gcs]        ← deletes the temporary GCS object
+   [export_and_publish_task] ← exports BQ table → GCS → S3 (skipped if no S3 bucket)
+              ▼
+        [cleanup_gcs]        ← deletes the temporary GCS staging object
 ```
 
 On **success** the DAG calls CKAN's `aircan_status_update` API with `state=success`.
@@ -58,13 +59,12 @@ On **failure** (task or DAG level) it calls CKAN with `state=failed` and sends a
 | Task ID | Description |
 |---------|-------------|
 | `collect_config_task` | Reads DAG trigger params from context; notifies CKAN that the pipeline is starting. |
-| `upload_to_gcs_task` | Streams the CSV from the CKAN resource URL directly into GCS. Detects gzip compression automatically. |
-| `infer_schema_task` | Uses the schema provided in params, or infers it by reading the uploaded GCS file via a signed URL. Column names are sanitized to BigQuery-safe identifiers. |
-| `validate_csv_task` | Validates every row of the CSV against the schema using the frictionless library. Fails the task with a detailed error report if validation errors are found. |
+| `prepare_and_upload_task` | Single task that: (1) infers or loads schema, (2) optionally validates records, (3) queries `MAX(row_number_column)` for append/upsert continuity, and (4) streams the source file to GCS with row numbers injected on the fly. Supports CSV, TSV, JSON array, NDJSON/JSONL, and Parquet. |
 | `branch_write_method` | Branches to `overwrite_or_append_table_task` or `upsert_table_task` based on `ingestion_method`. |
-| `overwrite_or_append_table_task` | Loads the GCS file directly into BigQuery with `WRITE_TRUNCATE` (overwrite) or `WRITE_APPEND` disposition. |
-| `upsert_table_task` | Loads the GCS file into a temporary staging table, then runs a BigQuery `MERGE` statement to upsert into the target table using the specified unique keys. The staging table is dropped afterwards. |
-| `cleanup_gcs` | Deletes the temporary GCS object uploaded in `upload_to_gcs_task`. Runs after either write branch succeeds. |
+| `overwrite_or_append_table_task` | Loads the GCS file directly into BigQuery with `WRITE_TRUNCATE` (overwrite) or `WRITE_APPEND` disposition. Sets `record_updated_at_column` timestamp on all new rows. |
+| `upsert_table_task` | Loads the GCS file into a temporary staging table, then runs a BigQuery `MERGE` statement to upsert into the target table using the specified unique keys. `row_number_column` is preserved on matched rows (not overwritten). Sets `record_updated_at_column` only for rows that changed. The staging table is dropped afterwards. |
+| `export_and_publish_task` | Exports the final BigQuery table back to GCS (ordered by `row_number_column`), then uploads to S3. Skipped if `s3_config.bucket` is not set. |
+| `cleanup_gcs` | Deletes the temporary GCS staging object uploaded in `prepare_and_upload_task`. Runs after `export_and_publish_task`. |
 
 ---
 
@@ -76,7 +76,7 @@ All connection IDs are namespaced by the `site_id` value from the trigger params
 
 **Type:** `google_cloud_platform`
 
-Used by both `upload_to_gcs_task` and BigQuery write tasks to authenticate against GCP.
+Used by both `prepare_and_upload_task` and BigQuery write tasks to authenticate against GCP.
 
 | Field | Value |
 |-------|-------|
@@ -98,7 +98,7 @@ airflow connections add {site_id}_google_cloud \
 
 **Type:** `generic` (only the `password` field is used)
 
-Holds the CKAN API key used to authenticate the CSV download request and CKAN status update calls.
+Holds the CKAN API key used to authenticate the resource download request and CKAN status update calls.
 
 | Field | Value |
 |-------|-------|
@@ -140,23 +140,46 @@ airflow connections add {site_id}_email \
 
 ---
 
+### `{site_id}_s3` *(or custom `s3_config.conn_id`)*
+
+**Type:** `aws`
+
+Required only when `s3_config.bucket` is set. Holds AWS credentials for S3 export.
+
+| Field | Value |
+|-------|-------|
+| Conn Type | `Amazon Web Services` |
+| AWS Access Key ID | Your IAM access key |
+| AWS Secret Access Key | Your IAM secret key |
+
+**Register via CLI:**
+```bash
+airflow connections add {site_id}_s3 \
+  --conn-type aws \
+  --conn-login "YOUR_ACCESS_KEY_ID" \
+  --conn-password "YOUR_SECRET_ACCESS_KEY"
+```
+
+---
+
 ## Trigger Parameters
 
-The DAG is triggered manually (`schedule=None`) with a JSON params payload. All fields are nested under the four top-level keys below.
+The DAG is triggered manually (`schedule=None`) with a JSON params payload. All fields are nested under the five top-level keys below.
 
-> **Note:** The top-level key for non-GCS options is `other_config` (not `others_config`). The `DEFAULT_PARAMS` in the source file uses `others_config` as a placeholder only — use `other_config` in actual trigger payloads.
+> **Note:** The key for miscellaneous options is `others_config` (with an `s`).
 
 ---
 
 ### `resource`
 
-Configuration for the source CKAN resource.
+Configuration for the source resource.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `id` | string | Yes | — | CKAN resource UUID. Used as the BigQuery table name and in CKAN status update calls. |
-| `url` | string | Yes | — | Full HTTP/HTTPS URL to download the CSV file. Can be a CKAN download URL or any publicly accessible URL. Gzip-compressed files (`.csv.gz` / `.gz`) are detected automatically. |
-| `schemas` | object or null | No | `{}` (auto-infer) | A [frictionless Table Schema](https://specs.frictionlessdata.io/table-schema/) descriptor as a JSON object. When provided, schema inference is skipped and this descriptor is used directly. When empty or omitted, schema is inferred from the uploaded file. |
+| `url` | string | Yes | — | Full HTTP/HTTPS URL to download the file. Gzip-compressed files (`.csv.gz` / `.gz`) are detected automatically. |
+| `format` | string | No | `"csv"` | Explicit format override. One of `csv`, `tsv`, `json`, `ndjson`, `jsonl`, `parquet`. When omitted the pipeline defaults to `csv`. |
+| `schemas` | object or null | No | `{}` (auto-infer) | A [frictionless Table Schema](https://specs.frictionlessdata.io/table-schema/) descriptor as a JSON object. When provided, schema inference is skipped. When empty or omitted, schema is inferred from the source URL. |
 | `ingestion_method` | string | Yes | `"overwrite"` | One of `overwrite`, `append`, or `upsert`. See [Ingestion Methods](#ingestion-methods). |
 
 ---
@@ -180,23 +203,40 @@ Google Cloud Storage and project settings.
 |-----------|------|----------|---------|-------------|
 | `project_id` | string | Yes | — | GCP project ID where BigQuery datasets and GCS buckets reside. |
 | `dataset_id` | string | Yes | — | BigQuery dataset ID to load data into. Created automatically if it does not exist. |
-| `bucket` | string | Yes | — | GCS bucket name used as temporary staging for the CSV upload. The object is deleted after the pipeline completes. |
-| `chunk_size` | integer | No | `8388608` (8 MB) | Chunk size in bytes for streaming the CSV from CKAN to GCS. Increase for very large files on fast networks. |
-| `signed_url_expiration_seconds` | integer | No | `900` (15 min) | How long (in seconds) the GCS signed URL used for schema inference and CSV validation remains valid. Increase if validation of large files takes longer than 15 minutes. |
-| `upload_ready_timeout_seconds` | integer | No | `120` | Timeout in seconds for the GCS upload operation. |
+| `bucket` | string | Yes | — | GCS bucket name used as temporary staging for the upload. The object is deleted after the pipeline completes. |
+| `chunk_size` | integer | No | `8388608` (8 MB) | GCS resumable upload chunk size in bytes. |
 
 ---
 
-### `other_config`
+### `others_config`
 
 Miscellaneous pipeline options.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `skip_leading_rows` | integer | No | `1` | Number of header rows to skip when loading into BigQuery. Set to `1` for standard CSV files with a header row. |
+| `skip_leading_rows` | integer | No | `1` | Number of header rows to skip when loading CSV into BigQuery. Set to `1` for standard CSV files with a header row. Ignored for JSON and Parquet. |
 | `temp_table_prefix` | string | No | `"_temp_"` | Prefix for the temporary staging table created during upsert operations. E.g. with prefix `_temp_` and resource ID `abc123`, the staging table is `_temp_abc123`. |
+| `validate_records` | boolean | No | `false` | When `true`, validates every row against the schema using the frictionless library before uploading. Validation failures abort the pipeline with a detailed error report. |
+| `row_number_column` | string | No | `"_id"` | Name of the auto-incremented row number column injected into every record. See [Row Number Column](#row-number-column). |
+| `record_updated_at_column` | string | No | `"_updated_at"` | Name of the timestamp column set to the job run time when a row is inserted or updated. See [Record Updated-At Column](#record-updated-at-column). |
 | `notification_to_email` | list[string] | No | `[]` | List of email addresses to notify on pipeline failure. Requires the `{site_id}_email` Airflow connection to be configured. |
 | `notification_from_email` | string | No | `""` | Sender email address shown in failure alert emails. |
+| `http_connect_timeout` | integer | No | `10` | HTTP connection timeout in seconds for the source file download. |
+| `http_read_timeout` | integer | No | `1200` | HTTP read timeout in seconds for the source file download. Increase for very large files on slow connections. |
+
+---
+
+### `s3_config`
+
+Optional S3 export destination. The `export_and_publish_task` is skipped entirely when `s3_config.bucket` is not set.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `bucket` | string | No | `""` | S3 bucket name to export the final BigQuery table into. Leave empty to skip S3 export. |
+| `key_prefix` | string | No | `""` | S3 key prefix (folder path) for the exported file. |
+| `conn_id` | string | No | `"{site_id}_s3"` | Airflow connection ID for S3 credentials. Defaults to `{site_id}_s3`. |
+| `endpoint_url` | string | No | `""` | Custom S3-compatible endpoint URL (e.g. for MinIO). Leave empty for AWS S3. |
+| `region` | string | No | `""` | AWS region for the S3 bucket. |
 
 ---
 
@@ -206,19 +246,22 @@ Set via `resource.ingestion_method`.
 
 ### `overwrite`
 
-Truncates the target BigQuery table and replaces all data with the new CSV contents (`WRITE_TRUNCATE`). Safe to re-run; previous data is always replaced.
+Truncates the target BigQuery table and replaces all data with the new file contents (`WRITE_TRUNCATE`). Safe to re-run; previous data is always replaced. `row_number_column` starts at 1.
 
 ### `append`
 
-Appends new rows from the CSV to the existing BigQuery table (`WRITE_APPEND`). New columns present in the schema but absent from the existing table are added automatically.
+Appends new rows from the file to the existing BigQuery table (`WRITE_APPEND`). New columns present in the schema but absent from the existing table are added automatically. `row_number_column` continues from `MAX + 1` of the existing table.
 
 ### `upsert`
 
 Performs an insert-or-update (MERGE) operation using one or more unique key columns:
 
-1. Loads the CSV into a temporary staging table.
-2. Runs a BigQuery `MERGE` statement: rows matching on unique keys are updated; non-matching rows are inserted.
-3. Drops the staging table.
+1. Queries `MAX(row_number_column)` from the target table to determine the starting row number for new records.
+2. Loads the file into a temporary staging table.
+3. Runs a BigQuery `MERGE` statement: rows matching on unique keys are updated (non-key, non-preserved columns only); non-matching rows are inserted with new row numbers continuing from MAX + 1.
+4. `row_number_column` is **preserved** on matched rows (not overwritten during UPDATE).
+5. `record_updated_at_column` is set to the job timestamp only for rows where data actually changed (NULL-safe change detection), not for unchanged matched rows.
+6. Drops the staging table.
 
 Requires unique key columns to be declared in the schema descriptor with `"constraints": {"unique": true}`.
 
@@ -241,6 +284,50 @@ Requires unique key columns to be declared in the schema descriptor with `"const
 
 ---
 
+## Supported Formats
+
+Set via `resource.format`. The pipeline detects and handles each format natively during the streaming upload to GCS — no intermediate local files are created.
+
+| Format value | BigQuery source format | Notes |
+|---|---|---|
+| `csv` (default) | `CSV` | Streamed in pandas chunks. Gzip compression auto-detected from URL. |
+| `tsv` | `CSV` | Tab-separated; normalised to comma-separated CSV at stream time. |
+| `json` | `NEWLINE_DELIMITED_JSON` | Full JSON array loaded via streaming parser (ijson); converted to NDJSON on the fly. |
+| `ndjson` / `jsonl` | `NEWLINE_DELIMITED_JSON` | Streamed line by line. |
+| `parquet` | `PARQUET` | Streamed in row-group batches via pyarrow. |
+
+Exported files follow the same format convention: CSV exports become `.csv`, JSON/NDJSON/JSONL exports become `.ndjson`, Parquet exports become `.parquet`.
+
+---
+
+## Row Number Column
+
+Every record loaded by the pipeline receives an auto-incremented integer column (default name: `_id`, configurable via `others_config.row_number_column`). This column is the **first column** in the BigQuery table.
+
+| Ingestion method | Matched rows | New / all rows |
+|---|---|---|
+| `overwrite` | N/A (table truncated) | Starts at `1` |
+| `append` | N/A (inserts only) | Continues from `MAX + 1` |
+| `upsert` | `row_number_column` **preserved** (not overwritten) | Continues from `MAX + 1` |
+
+For `append` and `upsert`, the pipeline queries `SELECT COALESCE(MAX(row_number_column), 0)` on the target table before the upload so that new rows receive unique sequential numbers even across incremental loads.
+
+---
+
+## Record Updated-At Column
+
+An optional `TIMESTAMP` column (default name: `_updated_at`, configurable via `others_config.record_updated_at_column`) is automatically added to the BigQuery table to track when each row was last inserted or changed.
+
+| Ingestion method | Behaviour |
+|---|---|
+| `overwrite` | All rows receive the current job timestamp. |
+| `append` | Only newly inserted rows receive the current job timestamp. |
+| `upsert` | Inserted rows receive the current job timestamp. Matched rows are updated **only if at least one data column changed** (NULL-safe); unchanged matched rows retain their existing timestamp. |
+
+This column is not part of the source file schema — it is managed entirely by the pipeline.
+
+---
+
 ## Schema Handling
 
 ### Provided schema (`resource.schemas`)
@@ -249,10 +336,7 @@ Pass a frictionless Table Schema descriptor object. Column names are sanitized t
 
 ### Auto-inferred schema
 
-When `resource.schemas` is empty or omitted, the DAG:
-1. Generates a GCS signed URL for the uploaded file.
-2. Uses the frictionless `Resource.infer()` method to detect field names and types.
-3. Sanitizes the inferred field names.
+When `resource.schemas` is empty or omitted, the DAG uses the frictionless `Resource.infer()` method to detect field names and types from the source URL, then sanitizes the inferred field names.
 
 ### Frictionless → BigQuery type mapping
 
@@ -269,6 +353,20 @@ When `resource.schemas` is empty or omitted, the DAG:
 | `yearmonth`, `duration` | `STRING` |
 | `geopoint`, `geojson` | `GEOGRAPHY` |
 | *(unknown)* | `STRING` |
+
+---
+
+## S3 Export
+
+When `s3_config.bucket` is set, the `export_and_publish_task` runs after the BigQuery write completes:
+
+1. Exports the target BigQuery table to GCS as sharded files, ordered by `row_number_column` ASC.
+2. For CSV: composes shards into a single GCS object (with header prepended), then uploads to S3.
+3. For NDJSON: composes shards into a single GCS object, then uploads to S3.
+4. For Parquet: uploads each shard individually (Parquet files cannot be concatenated). Multiple shards are named `{stem}_001.parquet`, `{stem}_002.parquet`, etc.
+5. Deletes all GCS export objects after a successful S3 upload.
+
+The export filename is derived from the source resource URL (e.g. `sales.csv`). The S3 key is `{s3_config.key_prefix}/{filename}`.
 
 ---
 
@@ -297,6 +395,7 @@ On any task failure an HTML alert email is sent via the `{site_id}_email` SMTP c
   "resource": {
     "id": "c8efed04-7100-4d85-9615-c6f12a7abe18",
     "url": "https://ckan.example.com/dataset/my-dataset/resource/c8efed04/download/data.csv",
+    "format": "csv",
     "schemas": {},
     "ingestion_method": "upsert"
   },
@@ -308,20 +407,30 @@ On any task failure an HTML alert email is sent via the `{site_id}_email` SMTP c
     "project_id": "my-gcp-project",
     "dataset_id": "ckan_data",
     "bucket": "my-aircan-staging-bucket",
-    "chunk_size": 8388608,
-    "signed_url_expiration_seconds": 900,
-    "upload_ready_timeout_seconds": 120
+    "chunk_size": 8388608
   },
-  "other_config": {
+  "others_config": {
     "skip_leading_rows": 1,
     "temp_table_prefix": "_temp_",
+    "validate_records": false,
+    "row_number_column": "_id",
+    "record_updated_at_column": "_updated_at",
     "notification_to_email": ["ops@example.com"],
-    "notification_from_email": "aircan-alerts@example.com"
+    "notification_from_email": "aircan-alerts@example.com",
+    "http_connect_timeout": 10,
+    "http_read_timeout": 1200
+  },
+  "s3_config": {
+    "conn_id": "my_ckan_s3",
+    "bucket": "my-s3-export-bucket",
+    "key_prefix": "ckan-exports/",
+    "endpoint_url": "",
+    "region": "us-east-1"
   }
 }
 ```
 
-For **overwrite** or **append** with an explicit schema:
+For **overwrite** or **append** with an explicit schema (no S3 export):
 
 ```json
 {
@@ -347,7 +456,7 @@ For **overwrite** or **append** with an explicit schema:
     "dataset_id": "ckan_data",
     "bucket": "my-aircan-staging-bucket"
   },
-  "other_config": {
+  "others_config": {
     "skip_leading_rows": 1,
     "notification_to_email": ["ops@example.com"],
     "notification_from_email": "aircan-alerts@example.com"

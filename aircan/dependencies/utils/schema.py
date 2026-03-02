@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from typing import Any, List, Mapping
+from typing import Any, List, Mapping, Optional
 
 from google.cloud import bigquery
 
@@ -88,12 +88,12 @@ def _sanitize_frictionless_descriptor(descriptor: Mapping[str, Any]) -> dict:
 
 def extract_unique_keys_from_schema(schema_descriptor: dict) -> List[str]:
     """Extract unique key field names from schema descriptor.
-    
+
     Looks for fields with constraints.unique = True
-    
+
     Args:
         schema_descriptor: Frictionless schema descriptor dict
-        
+
     Returns:
         List of field names marked as unique in constraints
     """
@@ -129,4 +129,17 @@ def schema_fields_from_descriptor(
                 name=name, field_type=bq_type, mode=mode, description=description
             )
         )
+    return fields
+
+
+def build_schema_fields(
+    schema_descriptor: dict,
+    row_number_column: Optional[str],
+) -> List[bigquery.SchemaField]:
+    """Build BQ schema fields, prepending the row number column as INT64 if set."""
+    fields = schema_fields_from_descriptor(schema_descriptor)
+    if row_number_column:
+        fields = [
+            bigquery.SchemaField(row_number_column, "INT64", mode="NULLABLE")
+        ] + fields
     return fields

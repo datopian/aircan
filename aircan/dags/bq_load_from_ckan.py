@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import logging
-import tempfile
+import requests
 
 from datetime import timedelta, datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -15,44 +15,47 @@ from airflow.sdk.bases.hook import BaseHook
 from airflow.sdk import ObjectStoragePath
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 
-from frictionless import Resource
+from frictionless import resources, system
 from google.cloud import bigquery
 
 from aircan.dependencies.utils.schema import (
     _load_frictionless_descriptor,
     _sanitize_frictionless_descriptor,
+    build_schema_fields,
     extract_unique_keys_from_schema,
-    schema_fields_from_descriptor,
 )
 from aircan.dependencies.cloud.clients import bq_client, gcs_client, s3_client
 from aircan.dependencies.cloud.storage import (
     gcs_object_name,
     filename_from_resource,
-    download_http_to_file,
-    upload_file_to_gcs,
-    upload_gcs_to_s3,
-    _add_row_number_to_csv,
+    HttpToGCSStreamer,
+    compose_gcs_shards_to_s3,
+    upload_parquet_shards_to_s3,
 )
 from aircan.dependencies.cloud.warehouse import (
     table_fqn,
     ensure_dataset_exists,
+    get_row_number_start,
+    bq_destination_format,
+    export_file_ext,
     append_or_overwrite_flow,
     upsert_flow,
     export_bq_to_gcs,
+    get_table_header,
 )
 from aircan.dependencies.utils.ckan import ckan_status_update_async
 from aircan.dependencies.utils.email import send_email, build_alert_html
-from aircan.dependencies.utils.validation import validate_csv
+from aircan.dependencies.utils.validation import ResourceValidator
 
 
 DAG_ID = "bq_load_from_csv"
 logger = logging.getLogger(__name__)
-DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 
 DEFAULT_PARAMS = {
     "resource": {
         "id": "63b3d77e-032f-4ef0-8790-cc81d0509d5f",
         "url": "https://example.com/dataset/266c57d5-ea6a-4b16-89e6-2f9e072f333d/resource/c8efed04-7100-4d85-9615-c6f12a7abe18/download/date.csv",
+        "format": "",  # optional explicit format override: "csv", "json", or "parquet"
         "schemas": {},
         "ingestion_method": "overwrite",
     },
@@ -74,6 +77,8 @@ DEFAULT_PARAMS = {
         "record_updated_at_column": "_updated_at",
         "notification_to_email": ["example@gmail.com"],
         "notification_from_email": "sender@gmail.com",
+        "http_connect_timeout": 10,
+        "http_read_timeout": 1200,
     },
     "s3_config": {
         "conn_id": "aws_default",
@@ -93,32 +98,8 @@ DEFAULT_ARGS = {
 
 
 # ----------------------------
-# Helpers
+# Airflow helpers
 # ----------------------------
-
-
-def _row_number_start(
-    conn_id: str, project_id: str, target_fqn: str, column: str, ingestion_method: str
-) -> int:
-    """Return the next row number start value for append/upsert (MAX + 1), or 1 otherwise."""
-    if ingestion_method not in ("append", "upsert"):
-        return 1
-    try:
-        result = (
-            bq_client(conn_id, project_id)
-            .query(f"SELECT COALESCE(MAX(`{column}`), 0) AS max_rn FROM `{target_fqn}`")
-            .result()
-        )
-        for row in result:
-            return int(row.max_rn) + 1
-    except Exception:
-        logger.warning(
-            "Could not query MAX(%s) from %s — starting at 1",
-            column,
-            target_fqn,
-            exc_info=True,
-        )
-    return 1
 
 
 def _get_task_context() -> tuple[Dict[str, Any], Dict[str, Any]]:
@@ -128,18 +109,6 @@ def _get_task_context() -> tuple[Dict[str, Any], Dict[str, Any]]:
     config = ti.xcom_pull(task_ids="collect_config_task") or {}
     prepare_result = ti.xcom_pull(task_ids="prepare_and_upload_task") or {}
     return config, prepare_result
-
-
-def _build_schema_fields(
-    schema_descriptor: dict, row_number_column: Optional[str]
-) -> List[bigquery.SchemaField]:
-    """Build BQ schema fields, prepending the row number column as INT64 if set."""
-    fields = schema_fields_from_descriptor(schema_descriptor)
-    if row_number_column:
-        fields = [
-            bigquery.SchemaField(row_number_column, "INT64", mode="NULLABLE")
-        ] + fields
-    return fields
 
 
 # ----------------------------
@@ -219,12 +188,16 @@ def collect_config_task() -> Dict[str, Any]:
 @task(task_id="prepare_and_upload_task")
 def prepare_and_upload_task() -> Dict[str, Any]:
     """
-    Single-download task:
-      1. Download CSV from HTTP to a local temp file
-      2. Infer (or load) schema from local file
-      3. Validate records if enabled
-      4. Prepend _row_number column (continuing from MAX for append/upsert)
-      5. Upload processed file to GCS exactly once
+    Prepare and upload task — no local temp files, no intermediate GCS blobs.
+
+    All formats follow the same pipeline:
+      1. Infer schema via frictionless (reads small sample / footer only)
+      2. Validate from source URL if validate_records=True
+      3. Upload to GCS with row numbers injected on the fly:
+           CSV        → pandas chunked stream → GCS resumable upload
+           NDJSON     → pandas chunked stream → GCS resumable upload
+           JSON array → load into RAM         → NDJSON with row numbers → GCS
+           Parquet    → download into RAM      → pyarrow row numbers    → GCS
     """
     ctx = get_current_context()
     ti = ctx["ti"]
@@ -252,15 +225,22 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     site_id = config.get("ckan_config", {}).get("site_id", "")
     conn_id = f"{site_id}_google_cloud"
     bucket = gcs_config.get("bucket")
-    chunk_size = gcs_config.get("chunk_size", DEFAULT_CHUNK_SIZE)
     row_number_column = merged_others.get("row_number_column") or "_id"
     record_updated_at_column = (
         merged_others.get("record_updated_at_column") or "_updated_at"
     )
     validate_records = merged_others.get("validate_records", False)
+    http_connect_timeout = merged_others.get("http_connect_timeout", 10)
+    http_read_timeout = merged_others.get("http_read_timeout", 1200)
 
-    compression = "GZIP" if file_source.lower().endswith(".gz") else "NONE"
+    fmt = (resource_dict.get("format") or "csv").strip().lower()
+
+    logger.info("Format from resource dict: %s", fmt)
+
     object_name = gcs_object_name(file_source, resource_id, bucket)
+    project_id = gcs_config.get("project_id")
+    dataset_id = gcs_config.get("dataset_id")
+    target_fqn = table_fqn(project_id, dataset_id, resource_id)
 
     try:
         conn = BaseHook.get_connection(f"{site_id}_api_key")
@@ -269,99 +249,112 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         ckan_api_key = None
 
     storage_client = gcs_client(conn_id)
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".csv")
-    os.close(tmp_fd)
-    proc_fd, processed_path = tempfile.mkstemp(suffix="_processed.csv")
-    os.close(proc_fd)
+    bq = bq_client(conn_id, project_id)
 
-    try:
-        # Step 1: Download
-        ckan_status_update_async(
-            config, state="running", message="Downloading CSV file"
+    # BQ always receives an uncompressed file (pandas decompresses on the fly).
+    compression = "NONE"
+
+    pandas_compression = (
+        "gzip" if file_source.lower().split("?")[0].endswith(".gz") else None
+    )
+
+    # -----------------------------------------------------------------------
+    # 1. Schema inference (all formats)
+    # -----------------------------------------------------------------------
+    ckan_status_update_async(
+        config, state="running", message=f"Inferring schema for {fmt.upper()}"
+    )
+    ckan_http_session = requests.Session()
+    if ckan_api_key:
+        ckan_http_session.headers.update({"Authorization": ckan_api_key})
+
+    if schemas:
+        descriptor = _sanitize_frictionless_descriptor(
+            _load_frictionless_descriptor(schemas)
         )
-        download_http_to_file(file_source, tmp_path, chunk_size, ckan_api_key)
-
-        # Step 2: Schema
-        if schemas:
-            descriptor = _sanitize_frictionless_descriptor(
-                _load_frictionless_descriptor(schemas)
-            )
-        else:
-            fr_resource = Resource(path=tmp_path)
+    else:
+        with system.use_context(http_session=ckan_http_session):
+            fr_resource = resources.TableResource(path=file_source)
             fr_resource.infer()
             descriptor = _sanitize_frictionless_descriptor(
                 fr_resource.schema.to_descriptor()
             )
-        logger.info("Schema ready: %d fields", len(descriptor.get("fields", [])))
+    logger.info("Schema ready: %d fields", len(descriptor.get("fields", [])))
 
-        # Step 3: Validate (optional)
-        if validate_records:
-            ckan_status_update_async(
-                config, state="running", message="Validating CSV records"
-            )
-            report = validate_csv(
-                source_file=tmp_path,
-                schema=descriptor,
-                limit_rows=None,
-                limit_errors=1000,
-            )
-            if not report.valid:
-                report_dict = report.to_dict()
-                task_stats = ((report_dict.get("tasks") or [{}])[0]).get("stats", {})
-                total_rows = report.stats.get("rows") or task_stats.get("rows", 0)
-                total_errors = report.stats.get("errors") or task_stats.get("errors", 0)
-                raise AirflowException(
-                    json.dumps(
-                        {
-                            "message": "Records validation failed. rows=%d errors=%d"
-                            % (total_rows, total_errors),
-                            "report": report_dict,
-                        }
-                    )
+    # -----------------------------------------------------------------------
+    # 2. Validation (all formats)
+    # -----------------------------------------------------------------------
+    if validate_records:
+        ckan_status_update_async(
+            config, state="running", message=f"Validating {fmt.upper()} records"
+        )
+        report = ResourceValidator(
+            ckan_http_session,
+            fmt=fmt,
+            source_file=file_source,
+            schema=descriptor,
+            limit_errors=1000,
+        ).validate()
+        if not report.valid:
+            report_dict = report.to_dict()
+            task_stats = ((report_dict.get("tasks") or [{}])[0]).get("stats", {})
+            raise AirflowException(
+                json.dumps(
+                    {
+                        "message": "Records validation failed. rows=%d errors=%d"
+                        % (
+                            report.stats.get("rows") or task_stats.get("rows", 0),
+                            report.stats.get("errors") or task_stats.get("errors", 0),
+                        ),
+                        "report": report_dict,
+                    }
                 )
-            logger.info("CSV validation passed")
-        else:
-            logger.info(
-                "Validation skipped — set others_config.validate_records=true to enable"
             )
-
-        # Step 4: Add _row column
-        project_id = gcs_config.get("project_id")
-        dataset_id = gcs_config.get("dataset_id")
-        target_fqn = table_fqn(project_id, dataset_id, resource_id)
-        start = _row_number_start(
-            conn_id, project_id, target_fqn, row_number_column, ingestion_method
-        )
+        logger.info("%s validation passed", fmt.upper())
+    else:
         logger.info(
-            "%s mode: %s starts at %d", ingestion_method, row_number_column, start
-        )
-        _add_row_number_to_csv(tmp_path, processed_path, row_number_column, start=start)
-
-        # Step 5: Upload to GCS
-        ckan_status_update_async(
-            config, state="running", message="Uploading processed CSV to GCS"
-        )
-        gcs_uri = upload_file_to_gcs(
-            storage_client, processed_path, bucket, object_name
-        )
-        ckan_status_update_async(
-            config, state="running", message=f"CSV uploaded: {gcs_uri}"
+            "Validation skipped — set others_config.validate_records=true to enable"
         )
 
-        return {
-            "gcs_uri": gcs_uri,
-            "compression": compression,
-            "schema_descriptor": descriptor,
-            "row_number_column": row_number_column,
-            "record_updated_at_column": record_updated_at_column,
-        }
+    # -----------------------------------------------------------------------
+    # 3. Row number start
+    # -----------------------------------------------------------------------
+    start = get_row_number_start(bq, target_fqn, row_number_column, ingestion_method)
+    logger.info("%s mode: %s starts at %d", ingestion_method, row_number_column, start)
 
-    finally:
-        for path in [tmp_path, processed_path]:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+    # -----------------------------------------------------------------------
+    # 4. Upload (format-specific)
+    # -----------------------------------------------------------------------
+    ckan_status_update_async(
+        config,
+        state="running",
+        message=f"Processing and uploading {fmt.upper()} to GCS",
+    )
+    gcs_uri = HttpToGCSStreamer(
+        http_url=file_source,
+        storage_client=storage_client,
+        bucket_name=bucket,
+        object_name=object_name,
+        row_number_column=row_number_column,
+        ckan_http_session=ckan_http_session,
+        fmt=fmt,
+        start=start,
+        timeout=(http_connect_timeout, http_read_timeout),
+        pandas_compression=pandas_compression,
+    ).stream()
+
+    ckan_status_update_async(
+        config, state="running", message=f"{fmt.upper()} uploaded: {gcs_uri}"
+    )
+
+    return {
+        "gcs_uri": gcs_uri,
+        "compression": compression,
+        "schema_descriptor": descriptor,
+        "row_number_column": row_number_column,
+        "record_updated_at_column": record_updated_at_column,
+        "source_format": fmt,
+    }
 
 
 @task.branch(trigger_rule=TriggerRule.NONE_FAILED)
@@ -393,6 +386,7 @@ def overwrite_or_append_table_task() -> None:
     dataset_id = gcs_config.get("dataset_id")
     resource_id = resource_dict.get("id")
     skip_leading_rows = int(config.get("others_config", {}).get("skip_leading_rows", 1))
+    source_format = prepare_result.get("source_format", "csv")
 
     client = bq_client(conn_id, project_id)
     ensure_dataset_exists(client, project_id, dataset_id)
@@ -408,12 +402,14 @@ def overwrite_or_append_table_task() -> None:
         prepare_result["compression"],
         table_fqn(project_id, dataset_id, resource_id),
         write_method,
-        _build_schema_fields(
-            prepare_result["schema_descriptor"], prepare_result.get("row_number_column")
+        build_schema_fields(
+            prepare_result["schema_descriptor"],
+            prepare_result.get("row_number_column"),
         ),
         skip_leading_rows,
         record_updated_at_column=prepare_result.get("record_updated_at_column"),
         job_timestamp=datetime.now(timezone.utc),
+        source_format=source_format,
     )
     ckan_status_update_async(
         config, state="running", message=f"{write_method.capitalize()} complete"
@@ -435,6 +431,7 @@ def upsert_table_task() -> None:
     resource_id = resource_dict.get("id")
     skip_leading_rows = int(others_config.get("skip_leading_rows", 1))
     temp_table_prefix = others_config.get("temp_table_prefix", "_temp_")
+    source_format = prepare_result.get("source_format", "csv")
 
     schema_descriptor = prepare_result["schema_descriptor"]
     row_number_column = prepare_result.get("row_number_column")
@@ -450,11 +447,15 @@ def upsert_table_task() -> None:
         table_fqn(project_id, dataset_id, resource_id),
         table_fqn(project_id, dataset_id, f"{temp_table_prefix}{resource_id}"),
         extract_unique_keys_from_schema(schema_descriptor),
-        _build_schema_fields(schema_descriptor, row_number_column),
+        build_schema_fields(
+            schema_descriptor,
+            row_number_column,
+        ),
         skip_leading_rows,
         preserve_columns=[row_number_column] if row_number_column else None,
         record_updated_at_column=prepare_result.get("record_updated_at_column"),
         job_timestamp=datetime.now(timezone.utc),
+        source_format=source_format,
     )
     ckan_status_update_async(config, state="running", message="Upsert complete")
 
@@ -464,7 +465,9 @@ def cleanup_gcs_task() -> None:
     config, prepare_result = _get_task_context()
     gcs_uri = prepare_result.get("gcs_uri")
     if not gcs_uri:
-        logger.warning("cleanup_gcs_task: no gcs_uri in prepare_result — nothing to delete")
+        logger.warning(
+            "cleanup_gcs_task: no gcs_uri in prepare_result — nothing to delete"
+        )
         return
 
     site_id = config.get("ckan_config", {}).get("site_id", "")
@@ -477,13 +480,16 @@ def cleanup_gcs_task() -> None:
     )
 
 
-@task(task_id="export_and_publish_task", trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS)
+@task(
+    task_id="export_and_publish_task",
+    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+)
 def export_and_publish_task() -> None:
     """
     Final publish step:
-      1. Export the target table to GCS as CSV (sorted by row_number_column)
-      2. Upload exported CSV file(s) from GCS to S3
-      3. Clean up the GCS export files
+      1. Export the target BQ table to GCS (CSV, NDJSON, or Parquet — matches ingestion format)
+      2. Upload the exported file(s) from GCS to S3
+      3. Clean up GCS export objects
     S3 export is skipped if s3_config.bucket is not set.
     """
     config, prepare_result = _get_task_context()
@@ -498,6 +504,7 @@ def export_and_publish_task() -> None:
     site_id = config.get("ckan_config", {}).get("site_id", "")
     gcs_conn_id = f"{site_id}_google_cloud"
     row_number_column = prepare_result.get("row_number_column")
+    source_format = prepare_result.get("source_format", "csv")
 
     target_fqn_str = table_fqn(project_id, dataset_id, resource_id)
 
@@ -514,11 +521,28 @@ def export_and_publish_task() -> None:
     s3_key_prefix = s3_config.get("key_prefix", "")
     gcs_bucket = gcs_config.get("bucket")
     resource_filename = filename_from_resource(resource_dict)
-    export_gcs_uri = f"gs://{gcs_bucket}/exports/{resource_id}/{resource_filename}"
-    s3_key = f"{s3_key_prefix.rstrip('/')}/{resource_filename}"
+    stem, _ = os.path.splitext(resource_filename)
+
+    destination_format = bq_destination_format(source_format)
+    export_ext = export_file_ext(source_format)
+    is_csv = destination_format == bigquery.DestinationFormat.CSV
+    is_parquet = destination_format == bigquery.DestinationFormat.PARQUET
+
+    export_gcs_uri = f"gs://{gcs_bucket}/exports/{resource_id}/{stem}_*.{export_ext}"
+    s3_key = f"{s3_key_prefix.rstrip('/')}/{stem}.{export_ext}"
+
+    # Get CSV header before export; JSON/Parquet have no header concept
+    header_row = get_table_header(bq, target_fqn_str) if is_csv else None
 
     ckan_status_update_async(config, state="running", message="Exporting table to GCS")
-    export_bq_to_gcs(bq, target_fqn_str, export_gcs_uri, order_by_column=row_number_column)
+    export_bq_to_gcs(
+        bq,
+        target_fqn_str,
+        export_gcs_uri,
+        order_by_column=row_number_column,
+        print_header=False,
+        destination_format=destination_format,
+    )
 
     hook = S3Hook(aws_conn_id=s3_conn_id)
     creds = hook.get_credentials()
@@ -529,7 +553,14 @@ def export_and_publish_task() -> None:
         region_name=s3_config.get("region") or None,
     )
     ckan_status_update_async(config, state="running", message="Uploading export to S3")
-    s3_uri = upload_gcs_to_s3(gcs, export_gcs_uri, s3, s3_bucket, s3_key)
+    if is_parquet:
+        # Parquet shards cannot be concatenated — upload each shard individually
+        s3_uri = upload_parquet_shards_to_s3(gcs, export_gcs_uri, s3, s3_bucket, s3_key)
+    else:
+        # CSV (with header_row prepended) or NDJSON (header_row=None, shards composable)
+        s3_uri = compose_gcs_shards_to_s3(
+            gcs, export_gcs_uri, header_row, s3, s3_bucket, s3_key
+        )
     logger.info("Uploaded to S3: %s", s3_uri)
     ckan_status_update_async(
         config,
@@ -542,7 +573,7 @@ with DAG(
     dag_id=DAG_ID,
     schedule=None,
     catchup=False,
-    tags=["bigquery", "gcs", "csv"],
+    tags=["bigquery", "gcs", "csv", "json", "parquet"],
     default_args=DEFAULT_ARGS,
     on_success_callback=dag_success_callback,
     on_failure_callback=dag_run_failure_callback,

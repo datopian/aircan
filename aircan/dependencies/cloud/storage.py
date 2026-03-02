@@ -1,9 +1,15 @@
 """Google Cloud Storage utilities."""
 
+import codecs
 import concurrent.futures
+import csv
+import io
+import itertools
 import logging
 import os
 import json as _json
+from queue import Queue
+from threading import Thread
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
@@ -91,40 +97,65 @@ class HttpToGCSStreamer:
         return f"gs://{self.bucket_name}/{self.object_name}"
 
     def _stream_csv(self) -> str:
-        import pandas as pd
-
-        first = True
-        counter = self.start
         sep = "\t" if self.fmt == "tsv" else ","
-        with self.session.get(
-            self.http_url, stream=True, timeout=self.timeout
-        ) as response:
-            response.raise_for_status()
-            response.raw.decode_content = True
-            with self._blob().open("wb", chunk_size=self.gcs_chunk_size) as gcs_out:
-                for chunk in pd.read_csv(
-                    response.raw,
-                    sep=sep,
-                    dtype=str,
-                    keep_default_na=False,
-                    chunksize=self.csv_row_chunk,
-                    compression=self.pandas_compression,
-                ):
-                    chunk.insert(
-                        0, self.row_number_column, range(counter, counter + len(chunk))
-                    )
-                    counter += len(chunk)
-                    gcs_out.write(
-                        chunk.to_csv(index=False, header=first).encode("utf-8")
-                    )
-                    first = False
+        queue: Queue = Queue(maxsize=4)
+        sentinel = object()
+        exc_holder: list = [None]
+        rows_written: list = [0]
+
+        def producer():
+            try:
+                counter = self.start
+                with self.session.get(self.http_url, stream=True, timeout=self.timeout) as resp:
+                    resp.raise_for_status()
+                    resp.raw.decode_content = True
+                    text_in = codecs.getreader("utf-8")(resp.raw)
+                    reader = csv.reader(text_in, delimiter=sep)
+
+                    buf = io.StringIO()
+                    writer = csv.writer(buf, delimiter=sep)
+                    header_done = False
+
+                    for row in reader:
+                        if not header_done:
+                            writer.writerow([self.row_number_column] + row)
+                            header_done = True
+                        else:
+                            writer.writerow([counter] + row)
+                            counter += 1
+
+                        if buf.tell() >= self.gcs_chunk_size:
+                            queue.put(buf.getvalue().encode("utf-8"))
+                            buf.seek(0)
+                            buf.truncate(0)
+
+                    if buf.tell() > 0:
+                        queue.put(buf.getvalue().encode("utf-8"))
+
+                    rows_written[0] = counter - self.start
+            except Exception as e:
+                exc_holder[0] = e
+            finally:
+                queue.put(sentinel)
+
+        Thread(target=producer, daemon=True).start()
+
+        with self._blob().open("wb", chunk_size=self.gcs_chunk_size) as gcs_out:
+            while True:
+                chunk = queue.get()
+                if chunk is sentinel:
+                    break
+                gcs_out.write(chunk)
+
+        if exc_holder[0]:
+            raise exc_holder[0]
 
         logger.info(
-            "Streamed HTTP CSV with row numbers: %s -> gs://%s/%s (rows=%d)",
+            "Streamed HTTP CSV/TSV with row numbers: %s -> gs://%s/%s (rows=%d)",
             self.http_url,
             self.bucket_name,
             self.object_name,
-            counter - self.start,
+            rows_written[0],
         )
         return f"gs://{self.bucket_name}/{self.object_name}"
 

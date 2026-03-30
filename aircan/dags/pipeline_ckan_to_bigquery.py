@@ -48,7 +48,7 @@ from aircan.dependencies.utils.email import send_email, build_alert_html
 from aircan.dependencies.utils.validation import ResourceValidator
 
 
-DAG_ID = "bq_load_from_csv"
+DAG_ID = "pipeline_ckan_to_bigquery"
 logger = logging.getLogger(__name__)
 
 DEFAULT_PARAMS = {

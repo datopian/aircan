@@ -8,8 +8,11 @@ Aircan is a collection of Apache Airflow DAGs for building and operating data pi
 aircan/
 ├── aircan/
 │   ├── dags/
-│   │   ├── bq_load_from_ckan.py      # Main DAG: CSV → GCS → BigQuery
+│   │   ├── pipeline_ckan_to_bigquery.py      # Main DAG: CKAN CSV → GCS → BigQuery
+│   │   ├── pipeline_ckan_to_bigquery_legacy.py  # Main DAG: CKAN CSV → GCS → BigQuery (legacy version)
+│   │   ├── pipeline_ckan_to_postgres_legacy.py  # Main DAG: CKAN CSV → GCS → Postgres Datstore (legacy version)
 │   │   └── other_dag.py              # Other DAGs can be added here
+│   └── dependencies_legacy/  # Legacy dependencies for older DAG versions (to be deprecated)
 │   └── dependencies/
 │       ├── cloud/
 │       │   ├── clients.py            # BigQuery / GCS Airflow hook wrappers
@@ -58,7 +61,7 @@ Airflow UI will be available at http://localhost:8080 (default credentials: `air
 
 Each pipeline run is namespaced by a **`site_id`** (set in the DAG trigger params). Airflow connection IDs follow the pattern `{site_id}_{type}`. Register the three connections below before triggering any DAG.
 
-See [DAG documentation](aircan/dags/bq_load_from_csv.md#airflow-connections) for full details.
+See [DAG documentation](aircan/dags/pipeline_ckan_to_bigquery.md#airflow-connections) for full details.
 
 ---
 
@@ -66,4 +69,4 @@ See [DAG documentation](aircan/dags/bq_load_from_csv.md#airflow-connections) for
 
 | DAG ID | Description | Documentation |
 |--------|-------------|---------------|
-| `bq_load_from_csv` | Load a CSV from CKAN into BigQuery via GCS | [bq_load_from_csv.md](docs/bq_load_from_csv.md) |
+| `pipeline_ckan_to_bigquery` | Load a CSV from CKAN into BigQuery via GCS | [pipeline_ckan_to_bigquery.md](docs/pipeline_ckan_to_bigquery.md) |

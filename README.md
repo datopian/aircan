@@ -70,3 +70,5 @@ See [DAG documentation](aircan/dags/pipeline_ckan_to_bigquery.md#airflow-connect
 | DAG ID | Description | Documentation |
 |--------|-------------|---------------|
 | `pipeline_ckan_to_bigquery` | Load a CSV from CKAN into BigQuery via GCS | [pipeline_ckan_to_bigquery.md](docs/pipeline_ckan_to_bigquery.md) |
+| `pipeline_ckan_to_bigquery_legacy` | Legacy version of the above DAG |   |
+| `pipeline_ckan_to_postgres_legacy` | Legacy DAG for loading CKAN CSV into Postgres Datastore  |  | 

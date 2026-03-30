@@ -27,6 +27,15 @@ aircan/
 └── config/                           # Airflow config overrides (airflow.cfg)
 ```
 
+## Triggers
+
+Aircan DAGs can be triggered in several ways depending on your use case:
+
+- **CKAN integration** — Install the [ckanext-aircan](https://github.com/datopian/ckanext-aircan/tree/feat/airflow-v3-support) extension, an alternative to DataPusher and XLoader, which automatically triggers the DAG whenever a new CSV resource is added or updated in CKAN.
+- **Scheduled runs** — Configure a cron-based schedule directly on the DAG to ingest data at regular intervals (e.g. nightly, hourly).
+- **Manual triggers** — Run a DAG on demand via the Airflow UI, passing any required parameters at runtime.
+- **REST API** — Trigger DAGs programmatically using the [Airflow REST API](https://airflow.apache.org/docs/apache-airflow/stable/stable-rest-api-ref.html), suitable for integration with external systems or CI/CD pipelines.
+
 ## Quick Start (Docker Compose)
 
 ### 1. Create a `.env` file
@@ -49,7 +58,7 @@ _AIRFLOW_WWW_USER_PASSWORD=airflow
 
 > **Note:** `.env` is git-ignored. Never commit credentials.
 
-### 3. Start the cluster
+### 3. Start the containers
 
 ```bash
 docker compose -f docker.compose.yaml up -d
@@ -60,8 +69,6 @@ Airflow UI will be available at http://localhost:8080 (default credentials: `air
 ### 4. Register Airflow Connections
 
 Each pipeline run is namespaced by a **`site_id`** (set in the DAG trigger params). Airflow connection IDs follow the pattern `{site_id}_{type}`. Register the three connections below before triggering any DAG.
-
-See [DAG documentation](aircan/dags/pipeline_ckan_to_bigquery.md#airflow-connections) for full details.
 
 ---
 

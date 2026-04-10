@@ -110,6 +110,7 @@ def load_csv_to_postgres_via_copy(connection=None, **kwargs):
         unique_keys = resource_dict.get('datastore_unique_keys', False)
         date_fields = [f['name'] for f in fields if f['type'] in ('date', 'datetime', 'timestamp')]
         cur = connection.cursor()
+        cur.execute("SET datestyle = 'DMY'")
 
         insert_sql = '''
             COPY \"{resource_id}\" ({column_names}) 

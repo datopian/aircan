@@ -11,10 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 def get_row_number_start(
-    client: bigquery.Client, target_fqn: str, column: str, ingestion_method: str
+    client: bigquery.Client, target_fqn: str, column: str, ingestion_mode: str
 ) -> int:
     """Return the next row number start value for append/upsert (MAX + 1), or 1 otherwise."""
-    if ingestion_method not in ("append", "upsert"):
+    if ingestion_mode not in ("append", "upsert"):
         return 1
     try:
         result = client.query(

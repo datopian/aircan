@@ -57,7 +57,7 @@ DEFAULT_PARAMS = {
         "url": "https://example.com/dataset/266c57d5-ea6a-4b16-89e6-2f9e072f333d/resource/c8efed04-7100-4d85-9615-c6f12a7abe18/download/date.csv",
         "format": "",  # optional explicit format override: "csv", "json", or "parquet"
         "schemas": {},
-        "ingestion_method": "overwrite",
+        "ingestion_mode": "regular", # or "append" or "upsert"
     },
     "ckan_config": {
         "site_url": "https://ckan.com",
@@ -217,7 +217,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     file_source = resource_dict.get("url")
     resource_id = resource_dict.get("id")
     schemas = resource_dict.get("schemas")
-    ingestion_method = resource_dict.get("ingestion_method", "overwrite")
+    ingestion_mode = resource_dict.get("ingestion_mode", "regular")
 
     if not file_source:
         raise RuntimeError("Resource file URL is missing")
@@ -319,8 +319,8 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     # -----------------------------------------------------------------------
     # 3. Row number start
     # -----------------------------------------------------------------------
-    start = get_row_number_start(bq, target_fqn, row_number_column, ingestion_method)
-    logger.info("%s mode: %s starts at %d", ingestion_method, row_number_column, start)
+    start = get_row_number_start(bq, target_fqn, row_number_column, ingestion_mode)
+    logger.info("%s mode: %s starts at %d", ingestion_mode, row_number_column, start)
 
     # -----------------------------------------------------------------------
     # 4. Upload (format-specific)
@@ -361,7 +361,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
 def branch_write_method() -> str:
     config, prepare_result = _get_task_context()
 
-    method = config.get("resource", {}).get("ingestion_method")
+    method = config.get("resource", {}).get("ingestion_mode")
     if method == "upsert":
         unique_keys = extract_unique_keys_from_schema(
             prepare_result.get("schema_descriptor", {})
@@ -378,7 +378,7 @@ def overwrite_or_append_table_task() -> None:
 
     resource_dict = config.get("resource", {})
     gcs_config = config.get("gcs_config", {})
-    write_method = resource_dict.get("ingestion_method", "overwrite")
+    write_method = resource_dict.get("ingestion_mode", "regular")
 
     site_id = config.get("ckan_config", {}).get("site_id", "")
     conn_id = f"{site_id}_google_cloud"

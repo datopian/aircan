@@ -109,6 +109,69 @@ def _describe_error(kind: str, col_type: str) -> str:
     return f"{kind.strip()} (expected {friendly})."
 
 
+def _describe_summary_only_error(message: str) -> str:
+    """Translate BigQuery's summary-only load error messages into a human form.
+
+    These show up when BQ aborts before producing per-row errors — usually because
+    every row failed the same way (column-count mismatch, encoding, wrong format,
+    schema mismatch). The summary string itself is unhelpful without context, so
+    we recognise common patterns and surface a likely cause + remediation.
+    """
+    msg = message or "BigQuery returned no error details."
+
+    # "CSV table encountered too many errors, giving up. Rows: 0; errors: 100"
+    m = re.search(
+        r"encountered too many errors.*?Rows:\s*(\d+);\s*errors:\s*(\d+)",
+        msg,
+        re.IGNORECASE,
+    )
+    if m:
+        rows_ok, err_count = m.group(1), m.group(2)
+        if rows_ok == "0":
+            return (
+                f"BigQuery load failed: 0 rows loaded, {err_count}+ row errors. "
+                "Every row failed — likely causes: header doesn't match the schema "
+                "(wrong/missing columns, extra columns, mismatched order), wrong "
+                "delimiter/quoting, or a type mismatch on every row. Verify the "
+                "first data row against the declared schema."
+            )
+        return (
+            f"BigQuery load failed: {rows_ok} rows loaded before aborting at "
+            f"{err_count}+ row errors. The data is partially valid — inspect a "
+            "few failing rows against the schema."
+        )
+
+    if "CSV table references column position" in msg:
+        return (
+            "BigQuery load failed: row has fewer columns than the schema declares. "
+            "Either the source has missing trailing values, a wrong delimiter, or "
+            "the schema has more fields than the CSV."
+        )
+
+    if "Error detected while parsing row" in msg:
+        return (
+            "BigQuery load failed: CSV parser couldn't read a row. Likely an "
+            "unescaped quote, embedded newline, or wrong delimiter. Check the "
+            "source file with `--csv_quote`/`--field_delimiter` in mind."
+        )
+
+    if "Unable to determine source format" in msg or "Unsupported value" in msg:
+        return (
+            "BigQuery load failed: source format couldn't be determined. Confirm "
+            "the file is the expected CSV/JSON/Parquet and that compression is "
+            "set correctly."
+        )
+
+    if "is not a valid value" in msg.lower() and "schema" in msg.lower():
+        return f"BigQuery load failed: schema rejected by BigQuery — {msg}"
+
+    # Last-resort: still echo the original, but at least strip the noisy
+    # boilerplate ("Error while reading data, error message: ...").
+    cleaned = re.sub(r"^Error while reading data,\s*error message:\s*", "", msg)
+    cleaned = re.sub(r"\s*Please look into the errors\[\] collection.*$", "", cleaned)
+    return f"BigQuery load failed: {cleaned}"
+
+
 def format_bq_load_errors(job: bigquery.LoadJob, max_examples: int = 3, max_groups: int = 5) -> str:
     """Format a BigQuery LoadJob's errors into a compact, human-readable summary.
 
@@ -140,7 +203,7 @@ def format_bq_load_errors(job: bigquery.LoadJob, max_examples: int = 3, max_grou
 
     if not groups:
         top = errors[0].get("message", "")
-        return f"BigQuery load failed: {top}"
+        return _describe_summary_only_error(top)
 
     total = sum(g["count"] for g in groups.values())
     lines = [f"BigQuery load failed: {total} row error(s) across {len(groups)} column(s)."]

@@ -20,7 +20,7 @@ def frictionless_to_bigquery_schema(field_type: str) -> str:
         "object": "JSON",
         "array": "JSON",
         "list": "JSON",
-        "datetime": "DATETIME",
+        "datetime": "TIMESTAMP",
         "date": "DATE",
         "time": "TIME",
         "year": "INT64",

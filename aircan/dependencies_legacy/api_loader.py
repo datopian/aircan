@@ -133,7 +133,7 @@ def compare_schema(site_url, ckan_api_key, res_dict, schema):
                 if res_dict['datastore_append_enabled'] and type_has_changed:
                     raise AirflowCKANException('You cannot change type of existing fields in append enabled resource.')
                 elif type_has_changed:
-                    #  have same columns but column type is changed so recreate table with overriding schemas
+                    #  have same columns but column type is changed so recreate table with overriding schema
                     return [True, ckan_schema]
                 else:
                     # Both columns and types are same so no need to recreate table

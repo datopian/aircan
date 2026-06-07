@@ -179,7 +179,7 @@ Configuration for the source resource.
 | `id` | string | Yes | — | CKAN resource UUID. Used as the BigQuery table name and in CKAN status update calls. |
 | `url` | string | Yes | — | Full HTTP/HTTPS URL to download the file. Gzip-compressed files (`.csv.gz` / `.gz`) are detected automatically. |
 | `format` | string | No | `"csv"` | Explicit format override. One of `csv`, `tsv`, `json`, `ndjson`, `jsonl`, `parquet`. When omitted the pipeline defaults to `csv`. |
-| `schemas` | object or null | No | `{}` (auto-infer) | A [frictionless Table Schema](https://specs.frictionlessdata.io/table-schema/) descriptor as a JSON object. When provided, schema inference is skipped. When empty or omitted, schema is inferred from the source URL. |
+| `schema` | object or null | No | `{}` (auto-infer) | A [frictionless Table Schema](https://specs.frictionlessdata.io/table-schema/) descriptor as a JSON object. When provided, schema inference is skipped. When empty or omitted, schema is inferred from the source URL. |
 | `ingestion_mode` | string | Yes | `"regular"` | One of `regular`, `append`, or `upsert`. See [Ingestion Methods](#ingestion-methods). |
 
 ---
@@ -330,13 +330,13 @@ This column is not part of the source file schema — it is managed entirely by 
 
 ## Schema Handling
 
-### Provided schema (`resource.schemas`)
+### Provided schema (`resource.schema`)
 
 Pass a frictionless Table Schema descriptor object. Column names are sanitized to BigQuery-compliant identifiers (alphanumeric and underscores only, max 128 chars, must start with a letter or underscore).
 
 ### Auto-inferred schema
 
-When `resource.schemas` is empty or omitted, the DAG uses the frictionless `Resource.infer()` method to detect field names and types from the source URL, then sanitizes the inferred field names.
+When `resource.schema` is empty or omitted, the DAG uses the frictionless `Resource.infer()` method to detect field names and types from the source URL, then sanitizes the inferred field names.
 
 ### Frictionless → BigQuery type mapping
 
@@ -396,7 +396,7 @@ On any task failure an HTML alert email is sent via the `{site_id}_email` SMTP c
     "id": "c8efed04-7100-4d85-9615-c6f12a7abe18",
     "url": "https://ckan.example.com/dataset/my-dataset/resource/c8efed04/download/data.csv",
     "format": "csv",
-    "schemas": {},
+    "schema": {},
     "ingestion_mode": "upsert"
   },
   "ckan_config": {

@@ -14,7 +14,7 @@ def frictionless_to_bigquery_schema(field_type: str) -> str:
     """Convert frictionless field type to BigQuery type."""
     mapper = {
         "string": "STRING",
-        "number": "NUMERIC",
+        "number": "BIGNUMERIC",
         "integer": "INT64",
         "boolean": "BOOL",
         "object": "JSON",
@@ -25,7 +25,7 @@ def frictionless_to_bigquery_schema(field_type: str) -> str:
         "time": "TIME",
         "year": "INT64",
         "yearmonth": "STRING",
-        "duration": "STRING",
+        "duration": "INTERVAL",
         "geopoint": "GEOGRAPHY",
         "geojson": "GEOGRAPHY",
         "any": "STRING",

@@ -56,7 +56,7 @@ DEFAULT_PARAMS = {
         "id": "63b3d77e-032f-4ef0-8790-cc81d0509d5f",
         "url": "https://example.com/dataset/266c57d5-ea6a-4b16-89e6-2f9e072f333d/resource/c8efed04-7100-4d85-9615-c6f12a7abe18/download/date.csv",
         "format": "",  # optional explicit format override: "csv", "json", or "parquet"
-        "schemas": {},
+        "schema": {},
         "ingestion_mode": "regular", # or "append" or "upsert"
     },
     "ckan_config": {
@@ -216,7 +216,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
 
     file_source = resource_dict.get("url")
     resource_id = resource_dict.get("id")
-    schemas = resource_dict.get("schemas")
+    schema = resource_dict.get("schema")
     ingestion_mode = resource_dict.get("ingestion_mode", "regular")
 
     if not file_source:
@@ -261,18 +261,18 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     # -----------------------------------------------------------------------
     # 1. Schema inference (all formats)
     # -----------------------------------------------------------------------
-    ckan_status_update_async(
-        config, state="running", message=f"Inferring schema for {fmt.upper()}"
-    )
     ckan_http_session = requests.Session()
     if ckan_api_key:
         ckan_http_session.headers.update({"Authorization": ckan_api_key})
 
-    if schemas:
+    if schema:
         descriptor = _sanitize_frictionless_descriptor(
-            _load_frictionless_descriptor(schemas)
+            _load_frictionless_descriptor(schema)
         )
     else:
+        ckan_status_update_async(
+            config, state="running", message=f"Inferring schema for {fmt.upper()}"
+        )
         with system.use_context(http_session=ckan_http_session):
             fr_resource = resources.TableResource(path=file_source)
             fr_resource.infer()

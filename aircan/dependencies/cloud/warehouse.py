@@ -1,13 +1,204 @@
 """BigQuery data warehouse operations."""
 
 import logging
+import re
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import GoogleAPICallError, NotFound
 from google.cloud import bigquery
 
 logger = logging.getLogger(__name__)
+
+
+# BigQuery type names → user-facing names (matches Frictionless type vocabulary).
+_FRIENDLY_BQ_TYPE: dict = {
+    "int64":      "integer",
+    "double":     "number",
+    "float64":    "number",
+    "numeric":    "number",
+    "bignumeric": "number",
+    "bool":       "boolean",
+    "boolean":    "boolean",
+    "string":     "string",
+    "date":       "date",
+    "datetime":   "datetime",
+    "timestamp":  "timestamp",
+    "time":       "time",
+    "json":       "object",
+    "bytes":      "string",
+}
+
+
+def _friendly_type(bq_type: str) -> str:
+    return _FRIENDLY_BQ_TYPE.get((bq_type or "").lower(), bq_type or "the declared type")
+
+
+# Parses BigQuery's per-row load-error detail messages. Example:
+#   Error while reading data, error message: Invalid NUMERIC value: 0.123;
+#   byte_offset_to_start_of_line: 386321157 column_index: 16
+#   column_name: "acceptanceRatio" column_type: NUMERIC value: "0.123" File: gs://...
+_BQ_ROW_ERROR_RE = re.compile(
+    r'error message:\s*(?P<kind>[^;]+?);.*?'
+    r'column_name:\s*"(?P<col>[^"]+)"\s+'
+    r'column_type:\s*(?P<type>\w+)\s+'
+    r'value:\s*"(?P<value>[^"]*)"',
+    re.DOTALL,
+)
+
+
+def _canonical_kind(kind: str) -> str:
+    """Strip the value-dependent tail off a BQ error `kind` so same-shape errors group.
+
+    e.g. 'Invalid NUMERIC value: 0.123' and 'Invalid NUMERIC value: 0.456' both
+    canonicalise to 'Invalid NUMERIC value'.
+    """
+    k = kind.strip()
+    # Patterns that embed the offending value after a colon.
+    for prefix_pat in (
+        r"^(Invalid \w+(?: value)?)\s*:.*$",
+        r"^(Bad \w+ value)\s*:.*$",
+        r"^(Could not (?:cast literal|parse))\s+.+$",
+        r"^(.*?out of range(?:\s+for\s+\w+)?)\s*:?.*$",
+        r"^(Required field).+$",
+    ):
+        m = re.match(prefix_pat, k, re.IGNORECASE)
+        if m:
+            return m.group(1).rstrip(".")
+    return k.rstrip(".")
+
+
+def _describe_error(kind: str, col_type: str) -> str:
+    """Translate BigQuery's raw `kind` text into a friendly explanation.
+
+    Dispatches on the column type so every BQ scalar type (INT64, FLOAT64,
+    NUMERIC, BIGNUMERIC, BOOL, STRING, DATE, DATETIME, TIME, TIMESTAMP, JSON,
+    BYTES) gets a uniform "value is not a valid <friendly>" message — with
+    type-specific hints where the failure mode is actionable.
+    """
+    friendly = _friendly_type(col_type)
+    k = kind.lower()
+    ct = (col_type or "").upper()
+
+    # "Invalid <TYPE> value: ..." — works for every BQ type.
+    if "invalid" in k and "value" in k:
+        if ct == "NUMERIC":
+            return (
+                f"value doesn't fit {friendly}  — has more than 9 fractional "
+                "digits. Switch the column to FLOAT64 or round the source."
+            )
+        if ct == "BIGNUMERIC":
+            return f"value doesn't fit {friendly} . Update the correct field type"
+        return f"value is not a valid {friendly}."
+
+    # "Bad <type> value: ..." — alternate phrasing for INT64/DOUBLE/BOOL etc.
+    if k.startswith("bad ") and " value" in k:
+        return f"value is not a valid {friendly}."
+
+    if "could not parse" in k or "could not cast" in k:
+        return f"value could not be parsed as {friendly}."
+
+    if "out of range" in k:
+        return f"value is out of range for {friendly}."
+
+    if "required field" in k and "is missing" in k:
+        return f"required (NOT NULL) column has missing/empty values. Mark NULLABLE or fill the source."
+
+    # Fallback: original kind text, but with friendly type.
+    return f"{kind.strip()} (expected {friendly})."
+
+
+def format_bq_load_errors(job: bigquery.LoadJob, max_examples: int = 3, max_groups: int = 5) -> str:
+    """Format a BigQuery LoadJob's errors into a compact, human-readable summary.
+
+    Groups per-row errors by (column, column_type, error_kind) and lists a few
+    sample values, translating BQ's raw wording into Frictionless-style type names.
+    """
+    errors = list(job.errors or [])
+    if not errors:
+        return "BigQuery load failed but no error details were returned."
+
+    groups: dict = defaultdict(lambda: {"count": 0, "examples": []})
+    skipped_top_level = 0
+
+    for err in errors:
+        message = err.get("message", "")
+        # A single `message` can carry many row errors concatenated with " File: ".
+        for chunk in message.split(" File: "):
+            m = _BQ_ROW_ERROR_RE.search(chunk)
+            if not m:
+                # Job-level summaries like "N errors occurred during load" don't
+                # carry column/value detail — count them separately, not as failures.
+                skipped_top_level += 1
+                continue
+            key = (m["col"], m["type"], m["kind"].strip())
+            g = groups[key]
+            g["count"] += 1
+            if len(g["examples"]) < max_examples and m["value"] not in g["examples"]:
+                g["examples"].append(m["value"])
+
+    if not groups:
+        top = errors[0].get("message", "")
+        return f"BigQuery load failed: {top}"
+
+    total = sum(g["count"] for g in groups.values())
+    lines = [f"BigQuery load failed: {total} row error(s) across {len(groups)} column(s)."]
+    sorted_groups = sorted(groups.items(), key=lambda kv: -kv[1]["count"])
+    for (col, col_type, kind), g in sorted_groups[:max_groups]:
+        examples = ", ".join(repr(v) for v in g["examples"])
+        desc = _describe_error(kind, col_type)
+        lines.append(f'  • column "{col}": {g["count"]} row(s) — {desc} Examples: {examples}')
+    if len(sorted_groups) > max_groups:
+        lines.append(f"  • … {len(sorted_groups) - max_groups} more column group(s) omitted")
+    return "\n".join(lines)
+
+
+# Patterns for BigQuery *query* errors (MERGE/INSERT) — different surface than
+# load errors. Each pattern returns a friendly one-liner; unrecognised input
+# falls through to the original exception.
+def translate_bq_query_error(exc: Exception) -> Optional[str]:
+    """Return a friendly message for a recognised BigQuery query error, else None."""
+    msg = str(exc)
+
+    if "Scalar subquery produced more than one element" in msg:
+        return (
+            "Duplicate rows with the same primary key were found in the source. "
+            "Deduplicate the input batch (or check your unique keys) and retry."
+        )
+
+    m = re.search(
+        r"Bad (int64|double|float64|bool|numeric|bignumeric) value: (.+?)(?:;|\n|$)",
+        msg,
+        re.IGNORECASE,
+    )
+    if m:
+        return f"Value {m.group(2).strip()!r} is not a valid {_friendly_type(m.group(1))}."
+
+    m = re.search(
+        r"Could not (?:cast literal|parse) ['\"](.+?)['\"]\s+(?:to type|as)\s+(\w+)",
+        msg,
+    )
+    if m:
+        return f"Value {m.group(1)!r} could not be parsed as {_friendly_type(m.group(2))}."
+
+    m = re.search(
+        r"(?:Value\s+)?out of range(?:\s+for\s+(\w+))?:?\s*(.+?)(?:;|\n|$)",
+        msg,
+        re.IGNORECASE,
+    )
+    if m:
+        return f"Value {m.group(2).strip()!r} is out of range for {_friendly_type(m.group(1) or '')}."
+
+    m = re.search(
+        r"Invalid (date|timestamp|datetime|time)(?:\s+value)?:\s*(.+?)(?:;|\n|$)",
+        msg,
+        re.IGNORECASE,
+    )
+    if m:
+        return f"Value {m.group(2).strip()!r} is not a valid {m.group(1).lower()}."
+
+    return None
 
 
 def get_row_number_start(
@@ -127,10 +318,17 @@ def load_gcs_to_bq_table(
         source_format,
     )
     job = client.load_table_from_uri(source_uri, dest_fqn, job_config=job_config)
-    job.result()
+    try:
+        job.result()
+    except GoogleAPICallError:
+        summary = format_bq_load_errors(job)
+        logger.error("%s", summary)
+        raise RuntimeError(summary) from None
 
     if job.errors:
-        raise RuntimeError(f"Load job failed: {job.errors}")
+        summary = format_bq_load_errors(job)
+        logger.error("%s", summary)
+        raise RuntimeError(summary)
 
     logger.info("BigQuery load complete: dest=%s", dest_fqn)
 
@@ -293,7 +491,14 @@ def merge_upsert_anyvalue_dedup(
         stage_fqn,
         unique_keys,
     )
-    client.query(sql, job_config=job_config).result()
+    try:
+        client.query(sql, job_config=job_config).result()
+    except GoogleAPICallError as e:
+        friendly = translate_bq_query_error(e)
+        if friendly:
+            logger.error("MERGE failed: %s", friendly)
+            raise RuntimeError(f"Upsert failed: {friendly}") from None
+        raise
     logger.info("Upsert complete into %s", target_fqn)
 
 
@@ -365,6 +570,34 @@ def get_table_header(client: bigquery.Client, source_fqn: str) -> str:
     return ",".join(f.name for f in table.schema) + "\n"
 
 
+def _iso_select_list(client: bigquery.Client, source_fqn: str) -> str:
+    """Build a SELECT list that formats date/time columns as ISO 8601 strings.
+
+    BigQuery's CSV export writes TIMESTAMP as `YYYY-MM-DD HH:MM:SS[.ffffff] UTC`
+    and DATETIME as `YYYY-MM-DD HH:MM:SS[.ffffff]` — neither is ISO 8601. This
+    helper wraps temporal columns in `FORMAT_*` so the exported CSV has clean
+    ISO values; non-temporal columns are passed through unchanged.
+    """
+    table = client.get_table(source_fqn)
+    parts = []
+    for f in table.schema:
+        name = f.name
+        ft = f.field_type.upper()
+        if ft == "TIMESTAMP":
+            parts.append(
+                f"FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E*SZ', `{name}`, 'UTC') AS `{name}`"
+            )
+        elif ft == "DATETIME":
+            parts.append(f"FORMAT_DATETIME('%Y-%m-%dT%H:%M:%E*S', `{name}`) AS `{name}`")
+        elif ft == "DATE":
+            parts.append(f"FORMAT_DATE('%Y-%m-%d', `{name}`) AS `{name}`")
+        elif ft == "TIME":
+            parts.append(f"FORMAT_TIME('%H:%M:%E*S', `{name}`) AS `{name}`")
+        else:
+            parts.append(f"`{name}`")
+    return ", ".join(parts)
+
+
 def export_bq_to_gcs(
     client: bigquery.Client,
     source_fqn: str,
@@ -377,30 +610,13 @@ def export_bq_to_gcs(
 
     destination_format: bigquery.DestinationFormat constant. Defaults to CSV.
     print_header: Only applies to CSV exports.
-    If order_by_column is set, rows are sorted via a short-lived temp table
-    (BQ extract_table does not support ORDER BY natively).
+    For CSV exports, date/time columns are reformatted to ISO 8601 via a
+    short-lived temp table (and that table is also where ordering is applied).
     """
-    if order_by_column:
-        tmp_fqn = f"{source_fqn}_export_tmp"
-        logger.info(
-            "Creating sorted temp table %s ORDER BY %s", tmp_fqn, order_by_column
-        )
-        client.query(
-            f"CREATE OR REPLACE TABLE `{tmp_fqn}` AS"
-            f" SELECT * FROM `{source_fqn}` ORDER BY `{order_by_column}` ASC"
-        ).result()
-        try:
-            _do_extract(
-                client,
-                tmp_fqn,
-                gcs_uri,
-                print_header=print_header,
-                destination_format=destination_format,
-            )
-        finally:
-            client.delete_table(tmp_fqn, not_found_ok=True)
-            logger.info("Deleted temp export table: %s", tmp_fqn)
-    else:
+    is_csv = destination_format == bigquery.DestinationFormat.CSV
+    needs_temp = is_csv or bool(order_by_column)
+
+    if not needs_temp:
         _do_extract(
             client,
             source_fqn,
@@ -408,6 +624,32 @@ def export_bq_to_gcs(
             print_header=print_header,
             destination_format=destination_format,
         )
+        return
+
+    tmp_fqn = f"{source_fqn}_export_tmp"
+    select_list = _iso_select_list(client, source_fqn) if is_csv else "*"
+    order_clause = f" ORDER BY `{order_by_column}` ASC" if order_by_column else ""
+    logger.info(
+        "Creating export temp table %s (iso_dates=%s, order_by=%s)",
+        tmp_fqn,
+        is_csv,
+        order_by_column,
+    )
+    client.query(
+        f"CREATE OR REPLACE TABLE `{tmp_fqn}` AS"
+        f" SELECT {select_list} FROM `{source_fqn}`{order_clause}"
+    ).result()
+    try:
+        _do_extract(
+            client,
+            tmp_fqn,
+            gcs_uri,
+            print_header=print_header,
+            destination_format=destination_format,
+        )
+    finally:
+        client.delete_table(tmp_fqn, not_found_ok=True)
+        logger.info("Deleted temp export table: %s", tmp_fqn)
 
 
 def _do_extract(

@@ -330,6 +330,21 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         state="running",
         message=f"Processing and uploading {fmt.upper()} to GCS",
     )
+
+    # Map date/datetime/time columns (declared with a non-ISO frictionless
+    # format, e.g. "%d/%m/%Y") to their source format by CSV position, so the
+    # streamer can rewrite them to ISO for BigQuery. Position-based to match
+    # BigQuery's positional schema mapping. "default"/"any" are already ISO.
+    date_formats = {
+        idx: (str(field.get("type")).lower(), field.get("format"))
+        for idx, field in enumerate(descriptor.get("fields", []))
+        if str(field.get("type")).lower() in ("date", "datetime", "time", "timestamp")
+        and field.get("format")
+        and field.get("format") not in ("default", "any")
+    }
+    if date_formats:
+        logger.info("Reformatting date columns to ISO at positions: %s", list(date_formats))
+
     gcs_uri = HttpToGCSStreamer(
         http_url=file_source,
         storage_client=storage_client,
@@ -341,6 +356,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         start=start,
         timeout=(http_connect_timeout, http_read_timeout),
         pandas_compression=pandas_compression,
+        date_formats=date_formats,
     ).stream()
 
     ckan_status_update_async(

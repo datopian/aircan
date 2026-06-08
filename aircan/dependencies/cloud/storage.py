@@ -8,6 +8,7 @@ import itertools
 import logging
 import os
 import json as _json
+from datetime import datetime
 from queue import Queue
 from threading import Thread
 from typing import Optional
@@ -21,6 +22,37 @@ import requests
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
+
+
+def _reformat_temporal(value: str, fr_type: str, src_format: str) -> str:
+    """Reformat a temporal CSV value from its declared frictionless format to ISO.
+
+    BigQuery's CSV loader does not honour frictionless ``format`` strings — it
+    only accepts ISO temporal literals (``YYYY-MM-DD`` for DATE, ``HH:MM:SS``
+    for TIME, ISO 8601 for DATETIME/TIMESTAMP). So a column declared
+    ``"%d/%m/%Y"`` with values like ``20/04/2022`` must be rewritten to
+    ``2022-04-20`` before load.
+
+    ``src_format`` is a Python strptime pattern (frictionless date/datetime/time
+    ``format``). Empty values pass through; values that don't match the declared
+    format are left unchanged so BigQuery surfaces a clear per-row error rather
+    than this silently corrupting them.
+    """
+    if not value:
+        return value
+    try:
+        dt = datetime.strptime(value, src_format)
+    except (ValueError, TypeError):
+        return value
+    if fr_type == "date":
+        return dt.strftime("%Y-%m-%d")
+    if fr_type == "time":
+        return dt.strftime("%H:%M:%S")
+    if fr_type in ("datetime", "timestamp"):
+        # ISO 8601 (keeps tz / microseconds if the source format captured them).
+        return dt.isoformat()
+    # Any other temporal type -> ISO 8601 fallback.
+    return dt.isoformat()
 
 
 class HttpToGCSStreamer:
@@ -41,6 +73,7 @@ class HttpToGCSStreamer:
         csv_row_chunk: int = 200_000,
         json_row_chunk: int = 200_000,
         pandas_compression: Optional[str] = None,
+        date_formats: Optional[dict] = None,
     ):
         self.http_url = http_url
         self.storage_client = storage_client
@@ -55,6 +88,11 @@ class HttpToGCSStreamer:
         self.csv_row_chunk = csv_row_chunk
         self.json_row_chunk = json_row_chunk
         self.pandas_compression = pandas_compression
+        # {column_index: (frictionless_type, strptime_format)} for date/datetime/
+        # time columns whose declared format isn't already ISO — reformatted to
+        # ISO per row so BigQuery can parse them. Index is the 0-based position
+        # in the source CSV (matches BigQuery's positional schema mapping).
+        self.date_formats = date_formats or {}
 
     def _blob(self):
         return self.storage_client.bucket(self.bucket_name).blob(self.object_name)
@@ -121,6 +159,12 @@ class HttpToGCSStreamer:
                             writer.writerow([self.row_number_column] + row)
                             header_done = True
                         else:
+                            # Rewrite declared date/datetime/time columns to ISO
+                            # so BigQuery (which ignores frictionless formats) can
+                            # parse them.
+                            for idx, (fr_type, src_fmt) in self.date_formats.items():
+                                if idx < len(row):
+                                    row[idx] = _reformat_temporal(row[idx], fr_type, src_fmt)
                             writer.writerow([counter] + row)
                             counter += 1
 

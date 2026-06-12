@@ -265,7 +265,14 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     if ckan_api_key:
         ckan_http_session.headers.update({"Authorization": ckan_api_key})
 
+    # System-generated columns the pipeline injects itself. If the source file
+    # already carries them, the streamer strips them during the GCS upload so
+    # they don't collide with the pipeline's own columns or break BigQuery's
+    # positional column mapping (which would otherwise fail the load).
+    system_columns = [row_number_column, record_updated_at_column]
+
     if schema:
+        # User-provided schema is taken as-is (normally omits the system columns).
         descriptor = _sanitize_frictionless_descriptor(
             _load_frictionless_descriptor(schema)
         )
@@ -276,9 +283,15 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         with system.use_context(http_session=ckan_http_session):
             fr_resource = resources.TableResource(path=file_source)
             fr_resource.infer()
-            descriptor = _sanitize_frictionless_descriptor(
-                fr_resource.schema.to_descriptor()
-            )
+            inferred = fr_resource.schema.to_descriptor()
+            # Inference reads the raw file, so drop any system columns it picked up
+            # to stay aligned with the stripped upload.
+            inferred["fields"] = [
+                f
+                for f in inferred.get("fields", [])
+                if str(f.get("name", "")).strip() not in system_columns
+            ]
+            descriptor = _sanitize_frictionless_descriptor(inferred)
     logger.info("Schema ready: %d fields", len(descriptor.get("fields", [])))
 
     # -----------------------------------------------------------------------
@@ -357,6 +370,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         timeout=(http_connect_timeout, http_read_timeout),
         pandas_compression=pandas_compression,
         date_formats=date_formats,
+        system_columns=system_columns,
     ).stream()
 
     ckan_status_update_async(

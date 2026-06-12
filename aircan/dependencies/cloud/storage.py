@@ -74,6 +74,7 @@ class HttpToGCSStreamer:
         json_row_chunk: int = 200_000,
         pandas_compression: Optional[str] = None,
         date_formats: Optional[dict] = None,
+        system_columns: Optional[list] = None,
     ):
         self.http_url = http_url
         self.storage_client = storage_client
@@ -93,6 +94,11 @@ class HttpToGCSStreamer:
         # ISO per row so BigQuery can parse them. Index is the 0-based position
         # in the source CSV (matches BigQuery's positional schema mapping).
         self.date_formats = date_formats or {}
+        # System-generated column names to strip from the source if present (e.g.
+        # the row-number / record-updated-at columns the pipeline injects itself).
+        # Matched against raw source header / object keys, so they stay aligned
+        # with the (also-stripped) schema descriptor.
+        self.system_columns = [str(c).strip() for c in (system_columns or []) if c]
 
     def _blob(self):
         return self.storage_client.bucket(self.bucket_name).blob(self.object_name)
@@ -104,8 +110,14 @@ class HttpToGCSStreamer:
         with fsspec.open(self.http_url, "rb", headers=headers) as f:
             pf = pq.ParquetFile(f)
             original_schema = pf.schema_arrow
+            keep_fields = [
+                field.name
+                for field in original_schema
+                if field.name.strip() not in self.system_columns
+            ]
             new_schema = pa.schema(
-                [pa.field(self.row_number_column, pa.int64())] + list(original_schema)
+                [pa.field(self.row_number_column, pa.int64())]
+                + [original_schema.field(n) for n in keep_fields]
             )
             counter = self.start
             total_rows = 0
@@ -118,7 +130,7 @@ class HttpToGCSStreamer:
                         )
                         new_batch = pa.RecordBatch.from_arrays(
                             [row_nums]
-                            + [batch.column(i) for i in range(batch.num_columns)],
+                            + [batch.column(n) for n in keep_fields],
                             schema=new_schema,
                         )
                         writer.write_batch(new_batch)
@@ -152,21 +164,21 @@ class HttpToGCSStreamer:
 
                     buf = io.StringIO()
                     writer = csv.writer(buf, delimiter=sep)
-                    header_done = False
+
+                    # Keep all columns except system ones (e.g. _id, _updated_at)
+                    # the source may already carry; date_formats reformats declared
+                    # date/time columns to ISO so BigQuery can parse them.
+                    header = next(reader, [])
+                    keep = [i for i, n in enumerate(header) if n.strip() not in self.system_columns]
+                    writer.writerow([self.row_number_column] + [header[i] for i in keep])
 
                     for row in reader:
-                        if not header_done:
-                            writer.writerow([self.row_number_column] + row)
-                            header_done = True
-                        else:
-                            # Rewrite declared date/datetime/time columns to ISO
-                            # so BigQuery (which ignores frictionless formats) can
-                            # parse them.
-                            for idx, (fr_type, src_fmt) in self.date_formats.items():
-                                if idx < len(row):
-                                    row[idx] = _reformat_temporal(row[idx], fr_type, src_fmt)
-                            writer.writerow([counter] + row)
-                            counter += 1
+                        out = [row[i] if i < len(row) else "" for i in keep]
+                        for idx, (fr_type, src_fmt) in self.date_formats.items():
+                            if idx < len(out):
+                                out[idx] = _reformat_temporal(out[idx], fr_type, src_fmt)
+                        writer.writerow([counter] + out)
+                        counter += 1
 
                         if buf.tell() >= self.gcs_chunk_size:
                             queue.put(buf.getvalue().encode("utf-8"))
@@ -214,6 +226,8 @@ class HttpToGCSStreamer:
                     if not raw_line:
                         continue
                     obj = _json.loads(raw_line)
+                    for key in self.system_columns:
+                        obj.pop(key, None)
                     obj = {self.row_number_column: counter, **obj}
                     gcs_out.write(_json.dumps(obj).encode("utf-8") + b"\n")
                     counter += 1
@@ -238,6 +252,8 @@ class HttpToGCSStreamer:
             response.raw.decode_content = True
             with self._blob().open("wb", chunk_size=self.gcs_chunk_size) as gcs_out:
                 for obj in ijson.items(response.raw, "item"):
+                    for key in self.system_columns:
+                        obj.pop(key, None)
                     gcs_out.write(
                         _json.dumps({self.row_number_column: counter, **obj}).encode(
                             "utf-8"

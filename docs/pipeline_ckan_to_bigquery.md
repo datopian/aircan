@@ -1,6 +1,6 @@
 # DAG: `pipeline_ckan_to_bigquery`
 
-Loads a resource from a CKAN instance into a Google BigQuery table via Google Cloud Storage (GCS). Supports CSV, TSV, JSON array, NDJSON/JSONL, and Parquet formats. Supports three ingestion modes: **overwrite**, **append**, and **upsert**. Optionally exports the final BigQuery table to S3.
+Loads a resource from a CKAN instance into a Google BigQuery table via Google Cloud Storage (GCS). Supports CSV, TSV, JSON array, NDJSON/JSONL, and Parquet formats. Supports three ingestion modes: **replace**, **append**, and **upsert**. Optionally exports the final BigQuery table to S3.
 
 ## Prerequisites
 
@@ -37,11 +37,11 @@ CKAN resource URL
 [prepare_and_upload_task]  ← infers schema, optionally validates, injects row
       │                       numbers, and streams file to GCS (all in one pass)
       ▼
-[branch_write_method]      ← routes to overwrite/append OR upsert
+[branch_write_method]      ← routes to replace/append OR upsert
       │
    ┌──┴──────────────────────┐
    ▼                         ▼
-[overwrite_or_append]    [upsert_table_task]
+[replace_or_append]    [upsert_table_task]
    └──────────┬──────────────┘
               ▼
    [export_and_publish_task] ← exports BQ table → GCS → S3 (skipped if no S3 bucket)
@@ -60,8 +60,8 @@ On **failure** (task or DAG level) it calls CKAN with `state=failed` and sends a
 |---------|-------------|
 | `collect_config_task` | Reads DAG trigger params from context; notifies CKAN that the pipeline is starting. |
 | `prepare_and_upload_task` | Single task that: (1) infers or loads schema, (2) optionally validates records, (3) queries `MAX(row_number_column)` for append/upsert continuity, and (4) streams the source file to GCS with row numbers injected on the fly. Supports CSV, TSV, JSON array, NDJSON/JSONL, and Parquet. |
-| `branch_write_method` | Branches to `overwrite_or_append_table_task` or `upsert_table_task` based on `ingestion_mode`. |
-| `overwrite_or_append_table_task` | Loads the GCS file directly into BigQuery with `WRITE_TRUNCATE` (overwrite) or `WRITE_APPEND` disposition. Sets `record_updated_at_column` timestamp on all new rows. |
+| `branch_write_method` | Branches to `replace_or_append_table_task` or `upsert_table_task` based on `ingestion_mode`. |
+| `replace_or_append_table_task` | Loads the GCS file directly into BigQuery with `WRITE_TRUNCATE` (replace) or `WRITE_APPEND` disposition. Sets `record_updated_at_column` timestamp on all new rows. |
 | `upsert_table_task` | Loads the GCS file into a temporary staging table, then runs a BigQuery `MERGE` statement to upsert into the target table using the specified unique keys. `row_number_column` is preserved on matched rows (not overwritten). Sets `record_updated_at_column` only for rows that changed. The staging table is dropped afterwards. |
 | `export_and_publish_task` | Exports the final BigQuery table back to GCS (ordered by `row_number_column`), then uploads to S3. Skipped if `s3_config.bucket` is not set. |
 | `cleanup_gcs` | Deletes the temporary GCS staging object uploaded in `prepare_and_upload_task`. Runs after `export_and_publish_task`. |
@@ -180,7 +180,7 @@ Configuration for the source resource.
 | `url` | string | Yes | — | Full HTTP/HTTPS URL to download the file. Gzip-compressed files (`.csv.gz` / `.gz`) are detected automatically. |
 | `format` | string | No | `"csv"` | Explicit format override. One of `csv`, `tsv`, `json`, `ndjson`, `jsonl`, `parquet`. When omitted the pipeline defaults to `csv`. |
 | `schema` | object or null | No | `{}` (auto-infer) | A [frictionless Table Schema](https://specs.frictionlessdata.io/table-schema/) descriptor as a JSON object. When provided, schema inference is skipped. When empty or omitted, schema is inferred from the source URL. |
-| `ingestion_mode` | string | Yes | `"regular"` | One of `regular`, `append`, or `upsert`. See [Ingestion Methods](#ingestion-methods). |
+| `ingestion_mode` | string | Yes | `"replace"` | One of `replace`, `append`, or `upsert`. See [Ingestion Methods](#ingestion-methods). |
 
 ---
 
@@ -244,7 +244,7 @@ Optional S3 export destination. The `export_and_publish_task` is skipped entirel
 
 Set via `resource.ingestion_mode`.
 
-### `regular` (default)
+### `replace` (default)
 
 Truncates the target BigQuery table and replaces all data with the new file contents (`WRITE_TRUNCATE`). Safe to re-run; previous data is always replaced. `row_number_column` starts at 1.
 
@@ -306,7 +306,7 @@ Every record loaded by the pipeline receives an auto-incremented integer column 
 
 | Ingestion method | Matched rows | New / all rows |
 |---|---|---|
-| `regular` | N/A (table truncated) | Starts at `1` |
+| `replace` | N/A (table truncated) | Starts at `1` |
 | `append` | N/A (inserts only) | Continues from `MAX + 1` |
 | `upsert` | `row_number_column` **preserved** (not overwritten) | Continues from `MAX + 1` |
 
@@ -320,7 +320,7 @@ An optional `TIMESTAMP` column (default name: `_updated_at`, configurable via `o
 
 | Ingestion method | Behaviour |
 |---|---|
-| `regular` | All rows receive the current job timestamp. |
+| `replace` | All rows receive the current job timestamp. |
 | `append` | Only newly inserted rows receive the current job timestamp. |
 | `upsert` | Inserted rows receive the current job timestamp. Matched rows are updated **only if at least one data column changed** (NULL-safe); unchanged matched rows retain their existing timestamp. |
 

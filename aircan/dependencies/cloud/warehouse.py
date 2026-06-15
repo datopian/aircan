@@ -433,7 +433,7 @@ def ensure_table_has_fields(
     logger.info("Added columns to %s: %s", table_fqn, ", ".join(f.name for f in to_add))
 
 
-def resolve_unique_keys_from_stage(
+def resolve_primary_keys_from_stage(
     client: bigquery.Client,
     stage_fqn: str,
     user_keys: List[str],
@@ -462,7 +462,7 @@ def merge_upsert_anyvalue_dedup(
     client: bigquery.Client,
     target_fqn: str,
     stage_fqn: str,
-    unique_keys: List[str],
+    primary_keys: List[str],
     preserve_columns: Optional[List[str]] = None,
     record_updated_at_column: Optional[str] = None,
     job_timestamp: Optional[datetime] = None,
@@ -476,12 +476,12 @@ def merge_upsert_anyvalue_dedup(
     stage_table = client.get_table(stage_fqn)
     cols = [f.name for f in stage_table.schema]
 
-    missing = [k for k in unique_keys if k not in cols]
+    missing = [k for k in primary_keys if k not in cols]
     if missing:
         raise RuntimeError(f"Unique key column(s) not found in CSV schema: {missing}")
 
     _preserve = set(preserve_columns or [])
-    non_key_cols = [c for c in cols if c not in unique_keys]
+    non_key_cols = [c for c in cols if c not in primary_keys]
     if not non_key_cols:
         raise RuntimeError("No non-key columns found to update/insert.")
 
@@ -492,7 +492,7 @@ def merge_upsert_anyvalue_dedup(
             "No columns left to update after excluding preserved columns."
         )
 
-    on_clause = " AND ".join([f"T.`{k}` = S.`{k}`" for k in unique_keys])
+    on_clause = " AND ".join([f"T.`{k}` = S.`{k}`" for k in primary_keys])
 
     # Change detection: any data column differs (NULL-safe).
     change_condition = " OR\n        ".join(
@@ -515,7 +515,7 @@ def merge_upsert_anyvalue_dedup(
     insert_cols = ", ".join([f"`{c}`" for c in insert_col_names])
     insert_vals = ", ".join(insert_val_exprs)
 
-    key_select = ", ".join([f"`{k}`" for k in unique_keys])
+    key_select = ", ".join([f"`{k}`" for k in primary_keys])
     any_select = ",\n          ".join(
         [f"ANY_VALUE(`{c}`) AS `{c}`" for c in non_key_cols]
     )
@@ -552,7 +552,7 @@ def merge_upsert_anyvalue_dedup(
         "BigQuery MERGE start: target=%s stage=%s keys=%s",
         target_fqn,
         stage_fqn,
-        unique_keys,
+        primary_keys,
     )
     try:
         client.query(sql, job_config=job_config).result()
@@ -565,7 +565,7 @@ def merge_upsert_anyvalue_dedup(
     logger.info("Upsert complete into %s", target_fqn)
 
 
-def append_or_overwrite_flow(
+def append_or_replace_flow(
     client: bigquery.Client,
     gcs_uri: str,
     compression: str,
@@ -577,7 +577,7 @@ def append_or_overwrite_flow(
     job_timestamp: Optional[datetime] = None,
     source_format: str = "csv",
 ) -> None:
-    """Load data from GCS with append or overwrite disposition."""
+    """Load data from GCS with append or replace disposition."""
     if schema_fields:
         ensure_table_has_fields(client, target_fqn, schema_fields)
 
@@ -614,7 +614,7 @@ def append_or_overwrite_flow(
             ],
         )
         ts = job_timestamp or datetime.now(timezone.utc)
-        # For overwrite: all rows are new (NULL). For append: only newly inserted rows are NULL.
+        # For replace: all rows are new (NULL). For append: only newly inserted rows are NULL.
         client.query(
             f"UPDATE `{target_fqn}` SET `{record_updated_at_column}` = @ts"
             f" WHERE `{record_updated_at_column}` IS NULL",
@@ -738,7 +738,7 @@ def upsert_flow(
     compression: str,
     target_fqn: str,
     stage_fqn: str,
-    unique_keys: List[str],
+    primary_keys: List[str],
     schema_fields: Optional[List[bigquery.SchemaField]],
     skip_leading_rows: int,
     preserve_columns: Optional[List[str]] = None,
@@ -760,10 +760,10 @@ def upsert_flow(
     )
     logger.info("Staging load complete")
 
-    unique_keys = resolve_unique_keys_from_stage(
-        client, stage_fqn, unique_keys, debug=True
+    primary_keys = resolve_primary_keys_from_stage(
+        client, stage_fqn, primary_keys, debug=True
     )
-    logger.info("Resolved UNIQUE_KEYS -> %s", unique_keys)
+    logger.info("Resolved UNIQUE_KEYS -> %s", primary_keys)
 
     ensure_target_exists_from_stage(client, target_fqn, stage_fqn)
     stage_table = client.get_table(stage_fqn)
@@ -781,12 +781,12 @@ def upsert_flow(
             ],
         )
 
-    logger.info("Upserting into %s using UNIQUE_KEYS=%s", target_fqn, unique_keys)
+    logger.info("Upserting into %s using UNIQUE_KEYS=%s", target_fqn, primary_keys)
     merge_upsert_anyvalue_dedup(
         client,
         target_fqn,
         stage_fqn,
-        unique_keys,
+        primary_keys,
         preserve_columns=preserve_columns,
         record_updated_at_column=record_updated_at_column,
         job_timestamp=job_timestamp,

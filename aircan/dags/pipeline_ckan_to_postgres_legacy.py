@@ -123,9 +123,9 @@ def check_schema(**context):
     if create_new_datastore_table:
         return ['create_datastore_table', 'push_data_into_datastore']
     elif resource_dict['datastore_append_enabled']:
-        datastore_unique_keys = context['params'].get('resource', {}).get('datastore_unique_keys', [])
+        datastore_primary_keys = context['params'].get('resource', {}).get('datastore_primary_keys', [])
         if resource_dict["package_id"] not in DATASETS_SKIP_UNIQUE_KEY_CHECK.split(","):
-            check_append_enabled(resource_dict['datastore_append_enabled'], datastore_unique_keys)
+            check_append_enabled(resource_dict['datastore_append_enabled'], datastore_primary_keys)
         return 'push_data_into_datastore'
     else:
         return ['create_datastore_table', 'push_data_into_datastore']

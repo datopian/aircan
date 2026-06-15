@@ -86,8 +86,8 @@ def _sanitize_frictionless_descriptor(descriptor: Mapping[str, Any]) -> dict:
     return updated_descriptor
 
 
-def extract_unique_keys_from_schema(schema_descriptor: dict) -> List[str]:
-    """Extract unique key field names from schema descriptor.
+def extract_primary_keys_from_schema(schema_descriptor: dict) -> List[str]:
+    """Extract primary key field names from schema descriptor.
 
     Looks for fields with constraints.unique = True
 
@@ -97,16 +97,8 @@ def extract_unique_keys_from_schema(schema_descriptor: dict) -> List[str]:
     Returns:
         List of field names marked as unique in constraints
     """
-    unique_keys = []
-    for field in schema_descriptor.get("fields", []):
-        if not isinstance(field, dict):
-            continue
-        constraints = field.get("constraints", {})
-        if constraints.get("unique") is True:
-            field_name = field.get("name", "")
-            if field_name:
-                unique_keys.append(sanitize_column_name(field_name))
-    return unique_keys
+    primary_keys = []
+    return schema_descriptor.get("primaryKey") 
 
 
 def schema_fields_from_descriptor(

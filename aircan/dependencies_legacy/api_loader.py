@@ -149,11 +149,11 @@ def compare_schema(site_url, ckan_api_key, res_dict, schema):
         raise AirflowCKANException(
             'Failed to fetch data dictionary for {0}'.format(res_id), str(err))
     
-def check_append_enabled(append_enable, datastore_unique_keys):
+def check_append_enabled(append_enable, datastore_primary_keys):
     """
     Check if resource is append enabled and whether it has unique keys or not
     """
-    if append_enable and not datastore_unique_keys:
+    if append_enable and not datastore_primary_keys:
         raise AirflowCKANException('Resource is append enabled but no unique keys are defined.')
 
 def delete_datastore_table(data_resource_id, ckan_api_key, ckan_site_url):
@@ -218,10 +218,10 @@ def load_resource_via_api(resource_dict, ckan_api_key, ckan_site_url, chunk_size
     logging.info("Loading resource via API lib")
     try:
         # Push data untill records is empty 
-        have_unique_keys = resource_dict.get('datastore_unique_keys', False)
+        have_primary_keys = resource_dict.get('datastore_primary_keys', False)
         resource_tmp_file = resource_dict['resource_tmp_file']
         method = 'insert'
-        if have_unique_keys:
+        if have_primary_keys:
             method = 'upsert'
         status_dict = {
                     'res_id': resource_dict['ckan_resource_id'],

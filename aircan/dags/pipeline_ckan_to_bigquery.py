@@ -22,7 +22,7 @@ from aircan.dependencies.utils.schema import (
     _load_frictionless_descriptor,
     _sanitize_frictionless_descriptor,
     build_schema_fields,
-    extract_unique_keys_from_schema,
+    extract_primary_keys_from_schema,
 )
 from aircan.dependencies.cloud.clients import bq_client, gcs_client, s3_client
 from aircan.dependencies.cloud.storage import (
@@ -38,7 +38,7 @@ from aircan.dependencies.cloud.warehouse import (
     get_row_number_start,
     bq_destination_format,
     export_file_ext,
-    append_or_overwrite_flow,
+    append_or_replace_flow,
     upsert_flow,
     export_bq_to_gcs,
     get_table_header,
@@ -57,7 +57,7 @@ DEFAULT_PARAMS = {
         "url": "https://example.com/dataset/266c57d5-ea6a-4b16-89e6-2f9e072f333d/resource/c8efed04-7100-4d85-9615-c6f12a7abe18/download/date.csv",
         "format": "",  # optional explicit format override: "csv", "json", or "parquet"
         "schema": {},
-        "ingestion_mode": "regular", # or "append" or "upsert"
+        "ingestion_mode": "replace", # or "append" or "upsert"
     },
     "ckan_config": {
         "site_url": "https://ckan.com",
@@ -217,7 +217,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     file_source = resource_dict.get("url")
     resource_id = resource_dict.get("id")
     schema = resource_dict.get("schema")
-    ingestion_mode = resource_dict.get("ingestion_mode", "regular")
+    ingestion_mode = resource_dict.get("ingestion_mode", "replace")
 
     if not file_source:
         raise RuntimeError("Resource file URL is missing")
@@ -393,22 +393,22 @@ def branch_write_method() -> str:
 
     method = config.get("resource", {}).get("ingestion_mode")
     if method == "upsert":
-        unique_keys = extract_unique_keys_from_schema(
+        primary_keys = extract_primary_keys_from_schema(
             prepare_result.get("schema_descriptor", {})
         )
-        if not unique_keys:
-            raise RuntimeError("No unique keys specified for upsert ingestion method.")
+        if not primary_keys:
+            raise RuntimeError("No primary keys specified for upsert ingestion method.")
         return "upsert_table_task"
-    return "overwrite_or_append_table_task"
+    return "replace_or_append_table_task"
 
 
-@task(task_id="overwrite_or_append_table_task")
-def overwrite_or_append_table_task() -> None:
+@task(task_id="replace_or_append_table_task")
+def replace_or_append_table_task() -> None:
     config, prepare_result = _get_task_context()
 
     resource_dict = config.get("resource", {})
     gcs_config = config.get("gcs_config", {})
-    write_method = resource_dict.get("ingestion_mode", "regular")
+    write_method = resource_dict.get("ingestion_mode", "replace")
 
     site_id = config.get("ckan_config", {}).get("site_id", "")
     conn_id = f"{site_id}_google_cloud"
@@ -424,9 +424,9 @@ def overwrite_or_append_table_task() -> None:
     ckan_status_update_async(
         config,
         state="running",
-        message=f"{'Appending' if write_method == 'append' else 'Overwriting'} to BigQuery",
+        message=f"{'Appending' if write_method == 'append' else 'Replacing'} to BigQuery",
     )
-    append_or_overwrite_flow(
+    append_or_replace_flow(
         client,
         prepare_result["gcs_uri"],
         prepare_result["compression"],
@@ -476,7 +476,7 @@ def upsert_table_task() -> None:
         prepare_result["compression"],
         table_fqn(project_id, dataset_id, resource_id),
         table_fqn(project_id, dataset_id, f"{temp_table_prefix}{resource_id}"),
-        extract_unique_keys_from_schema(schema_descriptor),
+        extract_primary_keys_from_schema(schema_descriptor),
         build_schema_fields(
             schema_descriptor,
             row_number_column,
@@ -611,7 +611,7 @@ with DAG(
     config = collect_config_task()
     prepare = prepare_and_upload_task()
     branch = branch_write_method()
-    append = overwrite_or_append_table_task()
+    append = replace_or_append_table_task()
     upsert = upsert_table_task()
     cleanup = cleanup_gcs_task()
     publish = export_and_publish_task()

@@ -1,5 +1,6 @@
 """BigQuery data warehouse operations."""
 
+import json
 import logging
 import re
 from collections import defaultdict
@@ -565,6 +566,56 @@ def merge_upsert_anyvalue_dedup(
     logger.info("Upsert complete into %s", target_fqn)
 
 
+def encode_table_description(schema_descriptor: Optional[dict]) -> str:
+    """JSON-encode a Frictionless schema under the `datastore` key.
+
+    Produces the same `{"datastore": {"schema_version": 1, "schema": {...}}}`
+    blob the datastore-api stores in a table's description, with engine-managed
+    system columns stripped from `fields`.
+    """
+    schema = dict(schema_descriptor or {})
+    schema["fields"] = [
+        f
+        for f in schema.get("fields", [])
+        if isinstance(f, dict) and f.get("name") not in frozenset({"_id", "_updated_at"})
+    ]
+    payload = {
+        "datastore": {
+            "schema_version": 1,
+            "schema": schema,
+        }
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def apply_table_options(
+    client: bigquery.Client,
+    table_fqn: str,
+    schema_descriptor: Optional[dict],
+) -> None:
+    """Set the table description (encoded schema) and `datastore_managed` label.
+
+    Idempotent: re-applying overwrites the description and ensures the label.
+    No-op if the table doesn't exist yet. Failures are logged, not raised — the
+    load itself has already succeeded, so metadata tagging shouldn't fail the run.
+    """
+    try:
+        table = client.get_table(table_fqn)
+    except NotFound:
+        logger.warning("apply_table_options: %s not found — skipping", table_fqn)
+        return
+
+    try:
+        table.description = encode_table_description(schema_descriptor)
+        labels = dict(table.labels or {})
+        labels["datastore_managed"] = "false"
+        table.labels = labels
+        client.update_table(table, ["description", "labels"])
+        logger.info("Applied datastore table options to %s", table_fqn)
+    except Exception:
+        logger.exception("Could not apply table options to %s", table_fqn)
+
+
 def append_or_replace_flow(
     client: bigquery.Client,
     gcs_uri: str,
@@ -576,6 +627,7 @@ def append_or_replace_flow(
     record_updated_at_column: Optional[str] = None,
     job_timestamp: Optional[datetime] = None,
     source_format: str = "csv",
+    schema_descriptor: Optional[dict] = None,
 ) -> None:
     """Load data from GCS with append or replace disposition."""
     if schema_fields:
@@ -624,6 +676,7 @@ def append_or_replace_flow(
         ).result()
         logger.info("Set %s for new rows in %s", record_updated_at_column, target_fqn)
 
+    apply_table_options(client, target_fqn, schema_descriptor)
     logger.info("Load complete into %s", target_fqn)
 
 
@@ -745,6 +798,7 @@ def upsert_flow(
     record_updated_at_column: Optional[str] = None,
     job_timestamp: Optional[datetime] = None,
     source_format: str = "csv",
+    schema_descriptor: Optional[dict] = None,
 ) -> None:
     """Complete upsert flow: load stage, merge to target."""
     logger.info("Loading into staging: %s", stage_fqn)
@@ -791,6 +845,8 @@ def upsert_flow(
         record_updated_at_column=record_updated_at_column,
         job_timestamp=job_timestamp,
     )
+
+    apply_table_options(client, target_fqn, schema_descriptor)
 
     client.delete_table(stage_fqn, not_found_ok=True)
     logger.info("Deleted staging table: %s", stage_fqn)

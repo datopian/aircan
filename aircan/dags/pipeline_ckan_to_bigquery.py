@@ -440,6 +440,7 @@ def replace_or_append_table_task() -> None:
         record_updated_at_column=prepare_result.get("record_updated_at_column"),
         job_timestamp=datetime.now(timezone.utc),
         source_format=source_format,
+        schema_descriptor=prepare_result["schema_descriptor"],
     )
     ckan_status_update_async(
         config, state="running", message=f"{write_method.capitalize()} complete"
@@ -486,6 +487,7 @@ def upsert_table_task() -> None:
         record_updated_at_column=prepare_result.get("record_updated_at_column"),
         job_timestamp=datetime.now(timezone.utc),
         source_format=source_format,
+        schema_descriptor=schema_descriptor,
     )
     ckan_status_update_async(config, state="running", message="Upsert complete")
 

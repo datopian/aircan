@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 
+# fsspec HTTP read tuning for parquet: batches are scanned sequentially, so a
+# readahead cache with a large block avoids one range request per small read.
+HTTP_BLOCK_SIZE = 32 * 1024 * 1024
+
 
 def _reformat_temporal(value: str, fr_type: str, src_format: str) -> str:
     """Reformat a temporal CSV value from its declared frictionless format to ISO.
@@ -70,11 +74,10 @@ class HttpToGCSStreamer:
         start: int = 1,
         timeout: tuple = (10, 1200),
         gcs_chunk_size: int = 32 * 1024 * 1024,
-        csv_row_chunk: int = 200_000,
-        json_row_chunk: int = 200_000,
-        pandas_compression: Optional[str] = None,
         date_formats: Optional[dict] = None,
         system_columns: Optional[list] = None,
+        record_updated_at_column: Optional[str] = None,
+        job_timestamp: Optional[datetime] = None,
     ):
         self.http_url = http_url
         self.storage_client = storage_client
@@ -86,9 +89,13 @@ class HttpToGCSStreamer:
         self.start = start
         self.timeout = timeout
         self.gcs_chunk_size = gcs_chunk_size
-        self.csv_row_chunk = csv_row_chunk
-        self.json_row_chunk = json_row_chunk
-        self.pandas_compression = pandas_compression
+        # When both are set, every streamed row gets a constant
+        # record-updated-at column appended LAST, so the load is a single
+        # atomic BQ job (no post-load schema patch + backfill UPDATE).
+        self.record_updated_at_column = (
+            record_updated_at_column if (record_updated_at_column and job_timestamp) else None
+        )
+        self.job_timestamp = job_timestamp
         # {column_index: (frictionless_type, strptime_format)} for date/datetime/
         # time columns whose declared format isn't already ISO — reformatted to
         # ISO per row so BigQuery can parse them. Index is the 0-based position
@@ -107,7 +114,13 @@ class HttpToGCSStreamer:
         import fsspec
 
         headers = dict(self.session.headers)
-        with fsspec.open(self.http_url, "rb", headers=headers) as f:
+        with fsspec.open(
+            self.http_url,
+            "rb",
+            headers=headers,
+            block_size=HTTP_BLOCK_SIZE,
+            cache_type="readahead",
+        ) as f:
             pf = pq.ParquetFile(f)
             original_schema = pf.schema_arrow
             keep_fields = [
@@ -115,23 +128,28 @@ class HttpToGCSStreamer:
                 for field in original_schema
                 if field.name.strip() not in self.system_columns
             ]
-            new_schema = pa.schema(
-                [pa.field(self.row_number_column, pa.int64())]
-                + [original_schema.field(n) for n in keep_fields]
-            )
+            ts_type = pa.timestamp("us", tz="UTC")  # tz-aware -> BQ TIMESTAMP
+            new_fields = [pa.field(self.row_number_column, pa.int64())] + [
+                original_schema.field(n) for n in keep_fields
+            ]
+            if self.record_updated_at_column:
+                new_fields.append(pa.field(self.record_updated_at_column, ts_type))
+                ts_scalar = pa.scalar(self.job_timestamp, type=ts_type)
+            new_schema = pa.schema(new_fields)
             counter = self.start
             total_rows = 0
             with self._blob().open("wb", chunk_size=self.gcs_chunk_size) as gcs_out:
                 with pq.ParquetWriter(gcs_out, new_schema) as writer:
-                    for batch in pf.iter_batches():
+                    for batch in pf.iter_batches(columns=keep_fields):
                         num_rows = len(batch)
                         row_nums = pa.array(
                             range(counter, counter + num_rows), type=pa.int64()
                         )
+                        arrays = [row_nums] + [batch.column(n) for n in keep_fields]
+                        if self.record_updated_at_column:
+                            arrays.append(pa.repeat(ts_scalar, num_rows))
                         new_batch = pa.RecordBatch.from_arrays(
-                            [row_nums]
-                            + [batch.column(n) for n in keep_fields],
-                            schema=new_schema,
+                            arrays, schema=new_schema
                         )
                         writer.write_batch(new_batch)
                         counter += num_rows
@@ -153,6 +171,9 @@ class HttpToGCSStreamer:
         exc_holder: list = [None]
         rows_written: list = [0]
 
+        updated_col = self.record_updated_at_column
+        updated_iso = self.job_timestamp.isoformat() if updated_col else None
+
         def producer():
             try:
                 counter = self.start
@@ -170,13 +191,20 @@ class HttpToGCSStreamer:
                     # date/time columns to ISO so BigQuery can parse them.
                     header = next(reader, [])
                     keep = [i for i, n in enumerate(header) if n.strip() not in self.system_columns]
-                    writer.writerow([self.row_number_column] + [header[i] for i in keep])
+                    out_header = [self.row_number_column] + [header[i] for i in keep]
+                    if updated_col:
+                        out_header.append(updated_col)
+                    writer.writerow(out_header)
 
                     for row in reader:
                         out = [row[i] if i < len(row) else "" for i in keep]
                         for idx, (fr_type, src_fmt) in self.date_formats.items():
                             if idx < len(out):
                                 out[idx] = _reformat_temporal(out[idx], fr_type, src_fmt)
+                        # Constant record-updated-at appended after reformatting so
+                        # the index-based date_formats can never touch it.
+                        if updated_col:
+                            out.append(updated_iso)
                         writer.writerow([counter] + out)
                         counter += 1
 
@@ -217,6 +245,8 @@ class HttpToGCSStreamer:
 
     def _stream_ndjson(self) -> str:
         counter = self.start
+        updated_col = self.record_updated_at_column
+        updated_iso = self.job_timestamp.isoformat() if updated_col else None
         with self.session.get(
             self.http_url, stream=True, timeout=self.timeout
         ) as response:
@@ -229,6 +259,8 @@ class HttpToGCSStreamer:
                     for key in self.system_columns:
                         obj.pop(key, None)
                     obj = {self.row_number_column: counter, **obj}
+                    if updated_col:
+                        obj[updated_col] = updated_iso
                     gcs_out.write(_json.dumps(obj).encode("utf-8") + b"\n")
                     counter += 1
 
@@ -245,6 +277,8 @@ class HttpToGCSStreamer:
         import ijson
 
         counter = self.start
+        updated_col = self.record_updated_at_column
+        updated_iso = self.job_timestamp.isoformat() if updated_col else None
         with self.session.get(
             self.http_url, stream=True, timeout=self.timeout
         ) as response:
@@ -254,12 +288,10 @@ class HttpToGCSStreamer:
                 for obj in ijson.items(response.raw, "item"):
                     for key in self.system_columns:
                         obj.pop(key, None)
-                    gcs_out.write(
-                        _json.dumps({self.row_number_column: counter, **obj}).encode(
-                            "utf-8"
-                        )
-                        + b"\n"
-                    )
+                    out = {self.row_number_column: counter, **obj}
+                    if updated_col:
+                        out[updated_col] = updated_iso
+                    gcs_out.write(_json.dumps(out).encode("utf-8") + b"\n")
                     counter += 1
 
         logger.info(
@@ -280,6 +312,19 @@ class HttpToGCSStreamer:
         if self.fmt == "json":
             return self._stream_json_array()
         return self._stream_csv()
+
+
+def read_parquet_footer_schema(http_url: str, session: requests.Session):
+    """Read a remote parquet file's arrow schema from its footer only.
+
+    Uses HTTP range requests (~KBs) instead of downloading the whole file —
+    unlike frictionless's parquet parser — and carries the session's auth
+    headers so private CKAN resources work.
+    """
+    import fsspec
+
+    with fsspec.open(http_url, "rb", headers=dict(session.headers)) as f:
+        return pq.ParquetFile(f).schema_arrow
 
 
 def is_http_url(value: str) -> bool:
@@ -307,14 +352,22 @@ def filename_from_resource(resource_dict: dict) -> str:
     return name or f"{resource_id}.csv"
 
 
-def gcs_object_name(source: str, resource_id: str, gcs_prefix: str) -> str:
-    """Generate GCS object name from source and resource ID."""
+def gcs_object_name(
+    source: str, resource_id: str, gcs_prefix: str, run_suffix: str = ""
+) -> str:
+    """Generate GCS object name from source and resource ID.
+
+    run_suffix (e.g. a sanitized Airflow run_id) isolates concurrent runs of
+    the same resource so they can't overwrite or clean up each other's object.
+    """
     name = (
         unquote(os.path.basename(urlparse(source).path))
         if is_http_url(source)
         else os.path.basename(source)
     )
     filename = (name or resource_id).replace("/", "_")
+    if run_suffix:
+        return f"{gcs_prefix}/{resource_id}/{run_suffix}/{filename}"
     return f"{gcs_prefix}/{resource_id}/{filename}"
 
 

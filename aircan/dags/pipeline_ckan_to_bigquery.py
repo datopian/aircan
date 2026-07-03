@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import re
 import requests
 
 from datetime import timedelta, datetime, timezone
@@ -22,12 +23,14 @@ from aircan.dependencies.utils.schema import (
     _load_frictionless_descriptor,
     _sanitize_frictionless_descriptor,
     build_schema_fields,
+    descriptor_from_arrow_schema,
     extract_primary_keys_from_schema,
 )
 from aircan.dependencies.cloud.clients import bq_client, gcs_client, s3_client
 from aircan.dependencies.cloud.storage import (
     gcs_object_name,
     filename_from_resource,
+    read_parquet_footer_schema,
     HttpToGCSStreamer,
     compose_gcs_shards_to_s3,
     upload_parquet_shards_to_s3,
@@ -111,6 +114,16 @@ def _get_task_context() -> tuple[Dict[str, Any], Dict[str, Any]]:
     return config, prepare_result
 
 
+def _run_suffix(ctx: Dict[str, Any]) -> str:
+    """GCS-safe suffix unique to this DAG run.
+
+    Scopes GCS objects per run so concurrent runs of the same resource can't
+    overwrite or clean up each other's files mid-load/export.
+    """
+    run_id = str(ctx.get("run_id") or "")
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", run_id)
+
+
 # ----------------------------
 # Airflow callbacks
 # ----------------------------
@@ -191,13 +204,10 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     Prepare and upload task — no local temp files, no intermediate GCS blobs.
 
     All formats follow the same pipeline:
-      1. Infer schema via frictionless (reads small sample / footer only)
+      1. Infer schema (parquet: footer read via pyarrow; others: frictionless sample)
       2. Validate from source URL if validate_records=True
-      3. Upload to GCS with row numbers injected on the fly:
-           CSV        → pandas chunked stream → GCS resumable upload
-           NDJSON     → pandas chunked stream → GCS resumable upload
-           JSON array → load into RAM         → NDJSON with row numbers → GCS
-           Parquet    → download into RAM      → pyarrow row numbers    → GCS
+      3. Stream source → GCS with the row-number column injected first and the
+         record-updated-at column appended last, so the BQ load is one atomic job.
     """
     ctx = get_current_context()
     ti = ctx["ti"]
@@ -237,10 +247,14 @@ def prepare_and_upload_task() -> Dict[str, Any]:
 
     logger.info("Format from resource dict: %s", fmt)
 
-    object_name = gcs_object_name(file_source, resource_id, bucket)
+    object_name = gcs_object_name(file_source, resource_id, bucket, _run_suffix(ctx))
     project_id = gcs_config.get("project_id")
     dataset_id = gcs_config.get("dataset_id")
     target_fqn = table_fqn(project_id, dataset_id, resource_id)
+
+    # Single timestamp for the whole run: baked into the uploaded file as the
+    # record-updated-at column and reused by the upsert MERGE's @job_ts.
+    job_timestamp = datetime.now(timezone.utc)
 
     try:
         conn = BaseHook.get_connection(f"{site_id}_api_key")
@@ -251,12 +265,8 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     storage_client = gcs_client(conn_id)
     bq = bq_client(conn_id, project_id)
 
-    # BQ always receives an uncompressed file (pandas decompresses on the fly).
+    # BQ always receives an uncompressed file (the streamer re-writes the data).
     compression = "NONE"
-
-    pandas_compression = (
-        "gzip" if file_source.lower().split("?")[0].endswith(".gz") else None
-    )
 
     # -----------------------------------------------------------------------
     # 1. Schema inference (all formats)
@@ -276,6 +286,15 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         descriptor = _sanitize_frictionless_descriptor(
             _load_frictionless_descriptor(schema)
         )
+    elif fmt == "parquet":
+        # Parquet declares its types in the footer — read only that (~KBs via
+        # range requests) instead of frictionless's full-file download, which
+        # also drops the CKAN auth header for remote files.
+        ckan_status_update_async(
+            config, state="running", message="Inferring schema from Parquet footer"
+        )
+        arrow_schema = read_parquet_footer_schema(file_source, ckan_http_session)
+        descriptor = descriptor_from_arrow_schema(arrow_schema, system_columns)
     else:
         ckan_status_update_async(
             config, state="running", message=f"Inferring schema for {fmt.upper()}"
@@ -358,6 +377,10 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     if date_formats:
         logger.info("Reformatting date columns to ISO at positions: %s", list(date_formats))
 
+    streamer_kwargs = {}
+    if gcs_config.get("chunk_size"):
+        streamer_kwargs["gcs_chunk_size"] = int(gcs_config["chunk_size"])
+
     gcs_uri = HttpToGCSStreamer(
         http_url=file_source,
         storage_client=storage_client,
@@ -368,9 +391,11 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         fmt=fmt,
         start=start,
         timeout=(http_connect_timeout, http_read_timeout),
-        pandas_compression=pandas_compression,
         date_formats=date_formats,
         system_columns=system_columns,
+        record_updated_at_column=record_updated_at_column,
+        job_timestamp=job_timestamp,
+        **streamer_kwargs,
     ).stream()
 
     ckan_status_update_async(
@@ -383,6 +408,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         "schema_descriptor": descriptor,
         "row_number_column": row_number_column,
         "record_updated_at_column": record_updated_at_column,
+        "job_timestamp": job_timestamp.isoformat(),
         "source_format": fmt,
     }
 
@@ -435,10 +461,9 @@ def replace_or_append_table_task() -> None:
         build_schema_fields(
             prepare_result["schema_descriptor"],
             prepare_result.get("row_number_column"),
+            prepare_result.get("record_updated_at_column"),
         ),
         skip_leading_rows,
-        record_updated_at_column=prepare_result.get("record_updated_at_column"),
-        job_timestamp=datetime.now(timezone.utc),
         source_format=source_format,
         schema_descriptor=prepare_result["schema_descriptor"],
     )
@@ -471,6 +496,9 @@ def upsert_table_task() -> None:
     ensure_dataset_exists(client, project_id, dataset_id)
 
     ckan_status_update_async(config, state="running", message="Upserting to BigQuery")
+    # Reuse the prepare task's timestamp so the MERGE's @job_ts matches the
+    # record-updated-at values baked into the staged file.
+    job_timestamp = datetime.fromisoformat(prepare_result["job_timestamp"])
     upsert_flow(
         client,
         prepare_result["gcs_uri"],
@@ -481,11 +509,12 @@ def upsert_table_task() -> None:
         build_schema_fields(
             schema_descriptor,
             row_number_column,
+            prepare_result.get("record_updated_at_column"),
         ),
         skip_leading_rows,
         preserve_columns=[row_number_column] if row_number_column else None,
         record_updated_at_column=prepare_result.get("record_updated_at_column"),
-        job_timestamp=datetime.now(timezone.utc),
+        job_timestamp=job_timestamp,
         source_format=source_format,
         schema_descriptor=schema_descriptor,
     )
@@ -560,7 +589,12 @@ def export_and_publish_task() -> None:
     is_csv = destination_format == bigquery.DestinationFormat.CSV
     is_parquet = destination_format == bigquery.DestinationFormat.PARQUET
 
-    export_gcs_uri = f"gs://{gcs_bucket}/exports/{resource_id}/{stem}_*.{export_ext}"
+    # Run-scoped prefix: shard compose/cleanup lists by prefix, so concurrent
+    # runs of the same resource must not share it.
+    run_suffix = _run_suffix(get_current_context())
+    export_gcs_uri = (
+        f"gs://{gcs_bucket}/exports/{resource_id}/{run_suffix}/{stem}_*.{export_ext}"
+    )
     s3_key = f"{s3_key_prefix.rstrip('/')}/{stem}.{export_ext}"
 
     # Get CSV header before export; JSON/Parquet have no header concept

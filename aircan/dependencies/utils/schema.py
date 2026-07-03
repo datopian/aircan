@@ -86,6 +86,46 @@ def _sanitize_frictionless_descriptor(descriptor: Mapping[str, Any]) -> dict:
     return updated_descriptor
 
 
+def _arrow_to_frictionless_type(arrow_type) -> str:
+    """Map a pyarrow DataType to a frictionless field type."""
+    import pyarrow as pa
+
+    if pa.types.is_boolean(arrow_type):
+        return "boolean"
+    if pa.types.is_integer(arrow_type):
+        return "integer"
+    if pa.types.is_floating(arrow_type) or pa.types.is_decimal(arrow_type):
+        return "number"
+    if pa.types.is_timestamp(arrow_type):
+        return "datetime"
+    if pa.types.is_date(arrow_type):
+        return "date"
+    if pa.types.is_time(arrow_type):
+        return "time"
+    if pa.types.is_list(arrow_type) or pa.types.is_large_list(arrow_type):
+        return "array"
+    if pa.types.is_struct(arrow_type) or pa.types.is_map(arrow_type):
+        return "object"
+    # string / large_string / binary / anything exotic -> string
+    return "string"
+
+
+def descriptor_from_arrow_schema(arrow_schema, system_columns: List[str]) -> dict:
+    """Build a frictionless schema descriptor from a parquet file's arrow schema.
+
+    Parquet embeds authoritative types, so no data sampling is needed — reading
+    the footer replaces a full-file frictionless inference download. Columns in
+    system_columns are dropped to stay aligned with the stripped upload.
+    """
+    stripped = {str(c).strip() for c in system_columns if c}
+    fields = [
+        {"name": field.name, "type": _arrow_to_frictionless_type(field.type)}
+        for field in arrow_schema
+        if field.name.strip() not in stripped
+    ]
+    return _sanitize_frictionless_descriptor({"fields": fields})
+
+
 def extract_primary_keys_from_schema(schema_descriptor: dict) -> List[str]:
     """Extract primary key field names from schema descriptor.
 
@@ -127,11 +167,20 @@ def schema_fields_from_descriptor(
 def build_schema_fields(
     schema_descriptor: dict,
     row_number_column: Optional[str],
+    record_updated_at_column: Optional[str] = None,
 ) -> List[bigquery.SchemaField]:
-    """Build BQ schema fields, prepending the row number column as INT64 if set."""
+    """Build BQ schema fields, prepending the row number column as INT64 if set.
+
+    record_updated_at_column is appended LAST as TIMESTAMP — it must mirror the
+    column the streamer bakes into the uploaded file (CSV loads map by position).
+    """
     fields = schema_fields_from_descriptor(schema_descriptor)
     if row_number_column:
         fields = [
             bigquery.SchemaField(row_number_column, "INT64", mode="NULLABLE")
         ] + fields
+    if record_updated_at_column:
+        fields = fields + [
+            bigquery.SchemaField(record_updated_at_column, "TIMESTAMP", mode="NULLABLE")
+        ]
     return fields

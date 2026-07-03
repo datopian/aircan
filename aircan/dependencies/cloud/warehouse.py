@@ -475,7 +475,15 @@ def merge_upsert_anyvalue_dedup(
         left unchanged for matched rows where no data column changed.
     """
     stage_table = client.get_table(stage_fqn)
-    cols = [f.name for f in stage_table.schema]
+    # The stage physically carries record_updated_at (baked in at stream time),
+    # but the MERGE manages that column exclusively via @job_ts — keep it out of
+    # the data-column list so change detection / UPDATE SET / INSERT don't
+    # reference it twice.
+    cols = [
+        f.name
+        for f in stage_table.schema
+        if f.name != record_updated_at_column
+    ]
 
     missing = [k for k in primary_keys if k not in cols]
     if missing:
@@ -624,15 +632,16 @@ def append_or_replace_flow(
     write_method: str,
     schema_fields: dict,
     skip_leading_rows: int,
-    record_updated_at_column: Optional[str] = None,
-    job_timestamp: Optional[datetime] = None,
     source_format: str = "csv",
     schema_descriptor: Optional[dict] = None,
 ) -> None:
-    """Load data from GCS with append or replace disposition."""
-    if schema_fields:
-        ensure_table_has_fields(client, target_fqn, schema_fields)
+    """Load data from GCS with append or replace disposition.
 
+    A single atomic load job: the record-updated-at column is baked into the
+    uploaded file and schema_fields, so no post-load schema patch or backfill
+    UPDATE is needed — those steps raced with concurrent runs of the same
+    resource ("Invalid schema update. Cannot add fields").
+    """
     disposition = (
         bigquery.WriteDisposition.WRITE_APPEND
         if write_method == "append"
@@ -641,7 +650,7 @@ def append_or_replace_flow(
     allow_field_addition = disposition == bigquery.WriteDisposition.WRITE_APPEND
 
     logger.info("Loading into target: %s using %s", target_fqn, write_method)
-    
+
     load_gcs_to_bq_table(
         client=client,
         source_uri=gcs_uri,
@@ -653,28 +662,6 @@ def append_or_replace_flow(
         skip_leading_rows=skip_leading_rows,
         source_format=source_format,
     )
-
-    if record_updated_at_column:
-        # Ensure column exists (WRITE_TRUNCATE recreates table without it).
-        ensure_table_has_fields(
-            client,
-            target_fqn,
-            [
-                bigquery.SchemaField(
-                    record_updated_at_column, "TIMESTAMP", mode="NULLABLE"
-                )
-            ],
-        )
-        ts = job_timestamp or datetime.now(timezone.utc)
-        # For replace: all rows are new (NULL). For append: only newly inserted rows are NULL.
-        client.query(
-            f"UPDATE `{target_fqn}` SET `{record_updated_at_column}` = @ts"
-            f" WHERE `{record_updated_at_column}` IS NULL",
-            job_config=bigquery.QueryJobConfig(
-                query_parameters=[bigquery.ScalarQueryParameter("ts", "TIMESTAMP", ts)]
-            ),
-        ).result()
-        logger.info("Set %s for new rows in %s", record_updated_at_column, target_fqn)
 
     apply_table_options(client, target_fqn, schema_descriptor)
     logger.info("Load complete into %s", target_fqn)
@@ -821,19 +808,9 @@ def upsert_flow(
 
     ensure_target_exists_from_stage(client, target_fqn, stage_fqn)
     stage_table = client.get_table(stage_fqn)
+    # Stage schema includes record_updated_at (baked in at stream time), so this
+    # also guarantees the column exists on target before the MERGE references it.
     ensure_table_has_fields(client, target_fqn, stage_table.schema)
-
-    # record_updated_at is not in the CSV/stage — ensure it exists on target before MERGE.
-    if record_updated_at_column:
-        ensure_table_has_fields(
-            client,
-            target_fqn,
-            [
-                bigquery.SchemaField(
-                    record_updated_at_column, "TIMESTAMP", mode="NULLABLE"
-                )
-            ],
-        )
 
     logger.info("Upserting into %s using UNIQUE_KEYS=%s", target_fqn, primary_keys)
     merge_upsert_anyvalue_dedup(

@@ -377,6 +377,18 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     if date_formats:
         logger.info("Reformatting date columns to ISO at positions: %s", list(date_formats))
 
+    # Emit CSV columns in the schema's field order, aligned to the source by
+    # header name (not source position). This lets append/upsert accept files
+    # whose columns are reordered, added, or omitted: values always land in the
+    # BigQuery column of the matching name, and a schema field absent from the
+    # source is written as NULL. date_formats above is keyed by this same field
+    # index, so it stays aligned.
+    field_order = [
+        str(field.get("name", "")).strip()
+        for field in descriptor.get("fields", [])
+        if str(field.get("name", "")).strip() not in system_columns
+    ]
+
     streamer_kwargs = {}
     if gcs_config.get("chunk_size"):
         streamer_kwargs["gcs_chunk_size"] = int(gcs_config["chunk_size"])
@@ -395,6 +407,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         system_columns=system_columns,
         record_updated_at_column=record_updated_at_column,
         job_timestamp=job_timestamp,
+        field_order=field_order,
         **streamer_kwargs,
     ).stream()
 

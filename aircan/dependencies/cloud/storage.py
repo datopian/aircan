@@ -19,6 +19,8 @@ import pyarrow.parquet as pq
 
 import requests
 
+from ..utils.schema import sanitize_column_name
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
@@ -78,6 +80,7 @@ class HttpToGCSStreamer:
         system_columns: Optional[list] = None,
         record_updated_at_column: Optional[str] = None,
         job_timestamp: Optional[datetime] = None,
+        field_order: Optional[list] = None,
     ):
         self.http_url = http_url
         self.storage_client = storage_client
@@ -106,6 +109,18 @@ class HttpToGCSStreamer:
         # Matched against raw source header / object keys, so they stay aligned
         # with the (also-stripped) schema descriptor.
         self.system_columns = [str(c).strip() for c in (system_columns or []) if c]
+        # Ordered schema field names (system columns excluded) used to align the
+        # CSV by *header name* instead of source position. When set, each output
+        # row is emitted in this exact order, pulling each field's value from the
+        # source by matching header name (a field missing from the source becomes
+        # empty -> NULL in BigQuery). This lets append/upsert accept files whose
+        # columns are reordered, added, or omitted without shifting data into the
+        # wrong column. date_formats stays valid because it is keyed by the
+        # descriptor field index, which equals this output order. When None, the
+        # legacy positional behaviour is used (output follows the source order).
+        self.field_order = (
+            [str(c).strip() for c in field_order] if field_order else None
+        )
 
     def _blob(self):
         return self.storage_client.bucket(self.bucket_name).blob(self.object_name)
@@ -186,18 +201,42 @@ class HttpToGCSStreamer:
                     buf = io.StringIO()
                     writer = csv.writer(buf, delimiter=sep)
 
-                    # Keep all columns except system ones (e.g. _id, _updated_at)
-                    # the source may already carry; date_formats reformats declared
-                    # date/time columns to ISO so BigQuery can parse them.
+                    # Decide the output columns and their source positions.
+                    # `out_names` is the emitted column order; `keep_idx[k]` is the
+                    # source-row index feeding output column k (None => the source
+                    # lacks that column, emitted as "" -> NULL).
                     header = next(reader, [])
-                    keep = [i for i, n in enumerate(header) if n.strip() not in self.system_columns]
-                    out_header = [self.row_number_column] + [header[i] for i in keep]
+                    if self.field_order is not None:
+                        # Name-based alignment: emit columns in schema order,
+                        # pulling each from the source by header name. Robust to
+                        # reordered / added / omitted source columns. Header names
+                        # are sanitized the same way the schema descriptor's field
+                        # names are (BigQuery-safe), so e.g. "Price (GBP)" in the
+                        # file matches the "Price_GBP" schema field.
+                        src_index = {
+                            sanitize_column_name(n): i for i, n in enumerate(header)
+                        }
+                        out_names = list(self.field_order)
+                        keep_idx = [src_index.get(n) for n in out_names]
+                    else:
+                        # Legacy positional behaviour: keep the source's own order,
+                        # dropping only system columns.
+                        keep = [
+                            i for i, n in enumerate(header)
+                            if n.strip() not in self.system_columns
+                        ]
+                        out_names = [header[i] for i in keep]
+                        keep_idx = keep
+                    out_header = [self.row_number_column] + out_names
                     if updated_col:
                         out_header.append(updated_col)
                     writer.writerow(out_header)
 
                     for row in reader:
-                        out = [row[i] if i < len(row) else "" for i in keep]
+                        out = [
+                            row[i] if (i is not None and i < len(row)) else ""
+                            for i in keep_idx
+                        ]
                         for idx, (fr_type, src_fmt) in self.date_formats.items():
                             if idx < len(out):
                                 out[idx] = _reformat_temporal(out[idx], fr_type, src_fmt)

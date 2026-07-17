@@ -39,7 +39,7 @@ def ckan_status_update_async(
         return
 
     try:
-        url = ckan_url.rstrip("/") + "/api/3/action/aircan_status_update"
+        url = ckan_url.rstrip("/") + "/api/3/action/aircan_hook"
         headers = {"Content-Type": "application/json"}
 
         if ckan_api_key:

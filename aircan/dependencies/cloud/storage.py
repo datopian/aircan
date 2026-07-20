@@ -165,7 +165,10 @@ class HttpToGCSStreamer:
         return f"gs://{self.bucket_name}/{self.object_name}"
 
     def _stream_csv(self) -> str:
-        sep = "\t" if self.fmt == "tsv" else ","
+        # Read with the source delimiter (tab for TSV), but always WRITE comma:
+        # the BigQuery load treats both csv and tsv as CSV with the default comma
+        # delimiter, so TSV must be normalised to comma-separated on the way out.
+        in_sep = "\t" if self.fmt == "tsv" else ","
         queue: Queue = Queue(maxsize=4)
         sentinel = object()
         exc_holder: list = [None]
@@ -181,10 +184,10 @@ class HttpToGCSStreamer:
                     resp.raise_for_status()
                     resp.raw.decode_content = True
                     text_in = codecs.getreader("utf-8")(resp.raw)
-                    reader = csv.reader(text_in, delimiter=sep)
+                    reader = csv.reader(text_in, delimiter=in_sep)
 
                     buf = io.StringIO()
-                    writer = csv.writer(buf, delimiter=sep)
+                    writer = csv.writer(buf, delimiter=",")
 
                     # Keep all columns except system ones (e.g. _id, _updated_at)
                     # the source may already carry; date_formats reformats declared

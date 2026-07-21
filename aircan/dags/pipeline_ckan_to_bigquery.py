@@ -42,6 +42,7 @@ from aircan.dependencies.cloud.warehouse import (
     bq_destination_format,
     export_file_ext,
     append_or_replace_flow,
+    append_flow,
     upsert_flow,
     export_bq_to_gcs,
     get_table_header,
@@ -377,6 +378,18 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     if date_formats:
         logger.info("Reformatting date columns to ISO at positions: %s", list(date_formats))
 
+    # Emit the source columns in the schema's field order, aligned to the source
+    # by (sanitized) header/key name rather than source position. This lets
+    # append/upsert accept files whose columns are reordered, added anywhere, or
+    # omitted: values always land in the BigQuery column of the matching name,
+    # and a schema field absent from the source is written as NULL. date_formats
+    # above is keyed by this same field index, so it stays aligned.
+    field_order = [
+        str(field.get("name", "")).strip()
+        for field in descriptor.get("fields", [])
+        if str(field.get("name", "")).strip() not in system_columns
+    ]
+
     streamer_kwargs = {}
     if gcs_config.get("chunk_size"):
         streamer_kwargs["gcs_chunk_size"] = int(gcs_config["chunk_size"])
@@ -395,6 +408,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         system_columns=system_columns,
         record_updated_at_column=record_updated_at_column,
         job_timestamp=job_timestamp,
+        field_order=field_order,
         **streamer_kwargs,
     ).stream()
 
@@ -441,32 +455,54 @@ def replace_or_append_table_task() -> None:
     project_id = gcs_config.get("project_id")
     dataset_id = gcs_config.get("dataset_id")
     resource_id = resource_dict.get("id")
-    skip_leading_rows = int(config.get("others_config", {}).get("skip_leading_rows", 1))
+    others_config = config.get("others_config", {})
+    skip_leading_rows = int(others_config.get("skip_leading_rows", 1))
+    temp_table_prefix = others_config.get("temp_table_prefix", "_temp_")
     source_format = prepare_result.get("source_format", "csv")
 
     client = bq_client(conn_id, project_id)
     ensure_dataset_exists(client, project_id, dataset_id)
+
+    schema_fields = build_schema_fields(
+        prepare_result["schema_descriptor"],
+        prepare_result.get("row_number_column"),
+        prepare_result.get("record_updated_at_column"),
+    )
+    target = table_fqn(project_id, dataset_id, resource_id)
 
     ckan_status_update_async(
         config,
         state="running",
         message=f"{'Appending' if write_method == 'append' else 'Replacing'} to BigQuery",
     )
-    append_or_replace_flow(
-        client,
-        prepare_result["gcs_uri"],
-        prepare_result["compression"],
-        table_fqn(project_id, dataset_id, resource_id),
-        write_method,
-        build_schema_fields(
-            prepare_result["schema_descriptor"],
-            prepare_result.get("row_number_column"),
-            prepare_result.get("record_updated_at_column"),
-        ),
-        skip_leading_rows,
-        source_format=source_format,
-        schema_descriptor=prepare_result["schema_descriptor"],
-    )
+    if write_method == "append":
+        # Append goes through a staging table and INSERTs into the target by
+        # column name, so the file's columns may be reordered and new columns
+        # may appear anywhere (see append_flow). Replace rebuilds the table, so
+        # it loads straight in — column order/new columns are inherently free.
+        append_flow(
+            client,
+            prepare_result["gcs_uri"],
+            prepare_result["compression"],
+            target,
+            table_fqn(project_id, dataset_id, f"{temp_table_prefix}{resource_id}"),
+            schema_fields,
+            skip_leading_rows,
+            source_format=source_format,
+            schema_descriptor=prepare_result["schema_descriptor"],
+        )
+    else:
+        append_or_replace_flow(
+            client,
+            prepare_result["gcs_uri"],
+            prepare_result["compression"],
+            target,
+            write_method,
+            schema_fields,
+            skip_leading_rows,
+            source_format=source_format,
+            schema_descriptor=prepare_result["schema_descriptor"],
+        )
     ckan_status_update_async(
         config, state="running", message=f"{write_method.capitalize()} complete"
     )

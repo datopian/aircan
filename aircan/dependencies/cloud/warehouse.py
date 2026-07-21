@@ -667,6 +667,62 @@ def append_or_replace_flow(
     logger.info("Load complete into %s", target_fqn)
 
 
+def append_flow(
+    client: bigquery.Client,
+    gcs_uri: str,
+    compression: str,
+    target_fqn: str,
+    stage_fqn: str,
+    schema_fields: Optional[List[bigquery.SchemaField]],
+    skip_leading_rows: int,
+    source_format: str = "csv",
+    schema_descriptor: Optional[dict] = None,
+) -> None:
+    """Append rows to the target table, matching columns to it by NAME.
+
+    The file is loaded into a staging table first and then INSERTed into the
+    target by column name — never loaded positionally into the target. This
+    lets an append accept files whose columns are reordered and lets brand-new
+    columns appear anywhere in the file (not only at the end): any column the
+    target lacks is added before the INSERT, and a target column absent from the
+    file is left NULL for the new rows. Works uniformly for every source format.
+
+    The row-number and record-updated-at values are baked into the staged file
+    (see the streamer), so the INSERT carries them straight through — no
+    post-load schema patch or backfill UPDATE that would race concurrent runs.
+    """
+    logger.info("Loading into staging: %s", stage_fqn)
+    load_gcs_to_bq_table(
+        client=client,
+        source_uri=gcs_uri,
+        dest_fqn=stage_fqn,
+        compression=compression,
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        schema_fields=schema_fields,
+        skip_leading_rows=skip_leading_rows,
+        source_format=source_format,
+    )
+    logger.info("Staging load complete")
+
+    ensure_target_exists_from_stage(client, target_fqn, stage_fqn)
+    stage_table = client.get_table(stage_fqn)
+    # Add any columns the staged file introduced (new columns can appear anywhere
+    # in the file — they are matched by name, not position).
+    ensure_table_has_fields(client, target_fqn, stage_table.schema)
+
+    col_list = ", ".join(f"`{field.name}`" for field in stage_table.schema)
+    logger.info("Appending into %s (columns: %s)", target_fqn, col_list)
+    client.query(
+        f"INSERT INTO `{target_fqn}` ({col_list}) "
+        f"SELECT {col_list} FROM `{stage_fqn}`"
+    ).result()
+
+    apply_table_options(client, target_fqn, schema_descriptor)
+
+    client.delete_table(stage_fqn, not_found_ok=True)
+    logger.info("Append complete into %s", target_fqn)
+
+
 def get_table_header(client: bigquery.Client, source_fqn: str) -> str:
     """Return the CSV header row for a BigQuery table (comma-separated column names + newline)."""
     table = client.get_table(source_fqn)

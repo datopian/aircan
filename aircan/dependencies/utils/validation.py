@@ -5,6 +5,8 @@ import requests
 
 from frictionless import Resource, Schema, system
 
+from .schema import sanitize_column_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,11 +46,22 @@ class ResourceValidator:
 
             descriptor_fields = schema_descriptor.get("fields", [])
             if header:
+                # Match each source column to the schema field of the same
+                # (sanitized) name, then build the validation schema in the
+                # file's column order. This checks types by name, not position,
+                # so a file whose columns are reordered validates correctly. A
+                # source column with no matching schema field (a new column) is
+                # validated without a type constraint.
+                by_name = {
+                    sanitize_column_name(str(f.get("name", ""))): f
+                    for f in descriptor_fields
+                    if isinstance(f, dict)
+                }
                 schema_descriptor["fields"] = [
-                    {**dict(descriptor_fields[i]), "name": str(col_name)}
-                    for i, col_name in enumerate(header)
-                    if i < len(descriptor_fields)
-                    and isinstance(descriptor_fields[i], dict)
+                    {**dict(by_name[key]), "name": str(col_name)}
+                    if (key := sanitize_column_name(str(col_name))) in by_name
+                    else {"name": str(col_name)}
+                    for col_name in header
                 ]
 
             schema_obj = Schema.from_descriptor(schema_descriptor)

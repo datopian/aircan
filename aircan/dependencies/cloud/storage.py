@@ -19,6 +19,8 @@ import pyarrow.parquet as pq
 
 import requests
 
+from ..utils.schema import sanitize_column_name
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
@@ -78,6 +80,7 @@ class HttpToGCSStreamer:
         system_columns: Optional[list] = None,
         record_updated_at_column: Optional[str] = None,
         job_timestamp: Optional[datetime] = None,
+        field_order: Optional[list] = None,
     ):
         self.http_url = http_url
         self.storage_client = storage_client
@@ -106,9 +109,38 @@ class HttpToGCSStreamer:
         # Matched against raw source header / object keys, so they stay aligned
         # with the (also-stripped) schema descriptor.
         self.system_columns = [str(c).strip() for c in (system_columns or []) if c]
+        # Ordered (sanitized) schema field names — system columns excluded — used
+        # to align the source to the schema by *name* instead of source position.
+        # When set, every format emits its data columns in exactly this order,
+        # pulling each value from the source by matching (sanitized) name: a field
+        # missing from the source becomes NULL, an extra source field is dropped.
+        # This lets append/upsert accept files whose columns are reordered, added
+        # (anywhere, not just at the end), or omitted, so data always lands in the
+        # BigQuery column of the matching name. date_formats is keyed by the
+        # descriptor field index, which equals this output order, so it stays
+        # aligned. When None, the legacy behaviour (follow the source order) runs.
+        self.field_order = (
+            [str(c).strip() for c in field_order] if field_order else None
+        )
 
     def _blob(self):
         return self.storage_client.bucket(self.bucket_name).blob(self.object_name)
+
+    def _align_obj(self, obj: dict) -> dict:
+        """Project a source JSON object onto the schema's field order.
+
+        With ``field_order`` set, returns a dict with exactly the schema fields,
+        in schema order, pulling each value from the source by sanitized key
+        (missing -> None -> NULL, extras dropped). Without it, falls back to the
+        legacy behaviour: keep the source keys, dropping only system columns.
+        """
+        if self.field_order is not None:
+            src = {sanitize_column_name(str(k)): v for k, v in obj.items()}
+            return {name: src.get(name) for name in self.field_order}
+        return {
+            k: v for k, v in obj.items()
+            if str(k).strip() not in self.system_columns
+        }
 
     def _stream_parquet(self) -> str:
         import fsspec
@@ -123,15 +155,36 @@ class HttpToGCSStreamer:
         ) as f:
             pf = pq.ParquetFile(f)
             original_schema = pf.schema_arrow
-            keep_fields = [
-                field.name
-                for field in original_schema
-                if field.name.strip() not in self.system_columns
-            ]
+            if self.field_order is not None:
+                # Name-based alignment: emit columns in schema order, renamed to
+                # their sanitized (BigQuery-safe) names so BigQuery maps them to
+                # the load schema by name. Extra source columns are dropped;
+                # schema fields absent from the source are simply omitted here and
+                # filled as NULL by BigQuery from the explicit load schema.
+                src_by_sani = {
+                    sanitize_column_name(field.name): field.name
+                    for field in original_schema
+                }
+                pairs = [
+                    (name, src_by_sani[name])
+                    for name in self.field_order
+                    if name in src_by_sani
+                ]
+                keep_src = [raw for _, raw in pairs]
+                data_fields = [
+                    pa.field(sani, original_schema.field(raw).type)
+                    for sani, raw in pairs
+                ]
+            else:
+                # Legacy: keep source order, drop only system columns.
+                keep_src = [
+                    field.name
+                    for field in original_schema
+                    if field.name.strip() not in self.system_columns
+                ]
+                data_fields = [original_schema.field(n) for n in keep_src]
             ts_type = pa.timestamp("us", tz="UTC")  # tz-aware -> BQ TIMESTAMP
-            new_fields = [pa.field(self.row_number_column, pa.int64())] + [
-                original_schema.field(n) for n in keep_fields
-            ]
+            new_fields = [pa.field(self.row_number_column, pa.int64())] + data_fields
             if self.record_updated_at_column:
                 new_fields.append(pa.field(self.record_updated_at_column, ts_type))
                 ts_scalar = pa.scalar(self.job_timestamp, type=ts_type)
@@ -140,12 +193,12 @@ class HttpToGCSStreamer:
             total_rows = 0
             with self._blob().open("wb", chunk_size=self.gcs_chunk_size) as gcs_out:
                 with pq.ParquetWriter(gcs_out, new_schema) as writer:
-                    for batch in pf.iter_batches(columns=keep_fields):
+                    for batch in pf.iter_batches(columns=keep_src):
                         num_rows = len(batch)
                         row_nums = pa.array(
                             range(counter, counter + num_rows), type=pa.int64()
                         )
-                        arrays = [row_nums] + [batch.column(n) for n in keep_fields]
+                        arrays = [row_nums] + [batch.column(n) for n in keep_src]
                         if self.record_updated_at_column:
                             arrays.append(pa.repeat(ts_scalar, num_rows))
                         new_batch = pa.RecordBatch.from_arrays(
@@ -165,7 +218,10 @@ class HttpToGCSStreamer:
         return f"gs://{self.bucket_name}/{self.object_name}"
 
     def _stream_csv(self) -> str:
-        sep = "\t" if self.fmt == "tsv" else ","
+        # Read with the source delimiter (tab for TSV), but always WRITE comma:
+        # the BigQuery load treats both csv and tsv as CSV with the default comma
+        # delimiter, so TSV must be normalised to comma-separated on the way out.
+        in_sep = "\t" if self.fmt == "tsv" else ","
         queue: Queue = Queue(maxsize=4)
         sentinel = object()
         exc_holder: list = [None]
@@ -181,23 +237,47 @@ class HttpToGCSStreamer:
                     resp.raise_for_status()
                     resp.raw.decode_content = True
                     text_in = codecs.getreader("utf-8")(resp.raw)
-                    reader = csv.reader(text_in, delimiter=sep)
+                    reader = csv.reader(text_in, delimiter=in_sep)
 
                     buf = io.StringIO()
-                    writer = csv.writer(buf, delimiter=sep)
+                    writer = csv.writer(buf, delimiter=",")
 
-                    # Keep all columns except system ones (e.g. _id, _updated_at)
-                    # the source may already carry; date_formats reformats declared
-                    # date/time columns to ISO so BigQuery can parse them.
+                    # Decide the output columns and the source position feeding
+                    # each. `out_names` is the emitted order; `keep_idx[k]` is the
+                    # source-row index for output column k (None => the source
+                    # lacks that column, emitted as "" -> NULL). date_formats
+                    # reformats declared date/time columns to ISO so BigQuery can
+                    # parse them.
                     header = next(reader, [])
-                    keep = [i for i, n in enumerate(header) if n.strip() not in self.system_columns]
-                    out_header = [self.row_number_column] + [header[i] for i in keep]
+                    if self.field_order is not None:
+                        # Name-based alignment: emit columns in schema order,
+                        # pulling each from the source by sanitized header name
+                        # (so "Price (GBP)" in the file matches the "Price_GBP"
+                        # schema field). Robust to reordered / added / omitted
+                        # source columns.
+                        src_index = {
+                            sanitize_column_name(n): i for i, n in enumerate(header)
+                        }
+                        out_names = list(self.field_order)
+                        keep_idx = [src_index.get(n) for n in out_names]
+                    else:
+                        # Legacy: keep the source's own order, drop system columns.
+                        keep = [
+                            i for i, n in enumerate(header)
+                            if n.strip() not in self.system_columns
+                        ]
+                        out_names = [header[i] for i in keep]
+                        keep_idx = keep
+                    out_header = [self.row_number_column] + out_names
                     if updated_col:
                         out_header.append(updated_col)
                     writer.writerow(out_header)
 
                     for row in reader:
-                        out = [row[i] if i < len(row) else "" for i in keep]
+                        out = [
+                            row[i] if (i is not None and i < len(row)) else ""
+                            for i in keep_idx
+                        ]
                         for idx, (fr_type, src_fmt) in self.date_formats.items():
                             if idx < len(out):
                                 out[idx] = _reformat_temporal(out[idx], fr_type, src_fmt)
@@ -256,8 +336,7 @@ class HttpToGCSStreamer:
                     if not raw_line:
                         continue
                     obj = _json.loads(raw_line)
-                    for key in self.system_columns:
-                        obj.pop(key, None)
+                    obj = self._align_obj(obj)
                     obj = {self.row_number_column: counter, **obj}
                     if updated_col:
                         obj[updated_col] = updated_iso
@@ -286,8 +365,7 @@ class HttpToGCSStreamer:
             response.raw.decode_content = True
             with self._blob().open("wb", chunk_size=self.gcs_chunk_size) as gcs_out:
                 for obj in ijson.items(response.raw, "item"):
-                    for key in self.system_columns:
-                        obj.pop(key, None)
+                    obj = self._align_obj(obj)
                     out = {self.row_number_column: counter, **obj}
                     if updated_col:
                         out[updated_col] = updated_iso

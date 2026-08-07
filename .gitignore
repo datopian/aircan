@@ -68,3 +68,6 @@ htmlcov/
 *.tmp
 *.bak
 .cache/
+
+# Generated constraint test reports
+reports/

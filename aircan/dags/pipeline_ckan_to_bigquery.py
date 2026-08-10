@@ -162,9 +162,19 @@ def _notify_failure(context: Dict[str, Any]) -> None:
     resource_id = params.get("resource", {}).get("id", "unknown")
     site_id = params.get("ckan_config", {}).get("site_id", "")
     others = params.get("others_config", {})
+    configured_recipients = others.get("notification_to_email", [])
+    recipients = (
+        [configured_recipients]
+        if isinstance(configured_recipients, str)
+        else list(configured_recipients or [])
+    )
+    recipients = list(dict.fromkeys(recipients))
+    changed_by_email = (params.get("changed_by") or {}).get("email")
+    if changed_by_email and changed_by_email not in recipients:
+        recipients.append(changed_by_email)
 
     send_email(
-        to=others.get("notification_to_email", []),
+        to=recipients,
         subject=f"Aircan pipeline failed: {resource_id}",
         html_content=build_alert_html(resource_id, error_payload),
         from_email=others.get("notification_from_email", ""),

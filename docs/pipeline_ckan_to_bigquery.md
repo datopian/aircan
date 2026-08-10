@@ -384,7 +384,13 @@ with payload `{ resource_id, state, type, message }`. Status updates are fire-an
 
 ### Failure email alerts
 
-On any task failure an HTML alert email is sent via the `{site_id}_email` SMTP connection. The email includes the resource ID, timestamp, and error details. Email sending is non-fatal.
+On any task failure, including validation failures, an HTML alert email is sent via
+the `{site_id}_email` SMTP connection. The email includes the resource ID,
+timestamp, and error details. Recipients configured in
+`others_config.notification_to_email` always receive the alert. If the trigger
+payload includes `changed_by.email`, that address is added automatically so the
+user who made the change is also notified. Duplicate addresses are removed.
+Email sending is non-fatal.
 
 ---
 
@@ -402,6 +408,11 @@ On any task failure an HTML alert email is sent via the `{site_id}_email` SMTP c
   "ckan_config": {
     "site_url": "https://ckan.example.com",
     "site_id": "my_ckan"
+  },
+  "changed_by": {
+    "id": "user-id",
+    "name": "dataset-editor",
+    "email": "editor@example.com"
   },
   "gcs_config": {
     "project_id": "my-gcp-project",
@@ -429,4 +440,3 @@ On any task failure an HTML alert email is sent via the `{site_id}_email` SMTP c
   }
 }
 ```
-

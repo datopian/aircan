@@ -169,9 +169,6 @@ def _notify_failure(context: Dict[str, Any]) -> None:
         else list(configured_recipients or [])
     )
     recipients = list(dict.fromkeys(recipients))
-    changed_by_email = (params.get("changed_by") or {}).get("email")
-    if changed_by_email and changed_by_email not in recipients:
-        recipients.append(changed_by_email)
 
     send_email(
         to=recipients,

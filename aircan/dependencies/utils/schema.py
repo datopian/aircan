@@ -78,6 +78,13 @@ def _sanitize_frictionless_descriptor(descriptor: Mapping[str, Any]) -> dict:
             )
         updated = dict(field)
         updated["name"] = sanitized
+        constraints = updated.get("constraints")
+        if isinstance(constraints, dict):
+            constraints = {key: value for key, value in constraints.items() if value != ""}
+            if constraints:
+                updated["constraints"] = constraints
+            else:
+                updated.pop("constraints", None)
         sanitized_fields.append(updated)
         seen[sanitized] = original
 

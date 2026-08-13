@@ -34,13 +34,15 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     error_message = error_payload.get("message", "") or ""
     run_id = error_payload.get("run_id", "")
+    failed_type = error_payload.get("failed_type", "")
 
     # The message often contains its own newlines (BQ summaries with bullet
     # points). Preserve them with white-space: pre-wrap inside the message block.
     safe_message = _html.escape(error_message)
 
     meta_rows = (
-        _meta_row("Resource ID", resource_id, mono=True)
+        _meta_row("Failed Type", failed_type)
+        + _meta_row("Resource ID", resource_id, mono=True)
         + _meta_row("Time", timestamp)
         + _meta_row("Run", run_id, mono=True)
     )

@@ -152,6 +152,11 @@ def _notify_failure(context: Dict[str, Any]) -> None:
     else:
         error_payload = {"message": str(exc) if exc else "DAG run failed"}
 
+    task_instance = context.get("task_instance") or context.get("ti")
+    task_id = getattr(task_instance, "task_id", "")
+    if task_id in {"replace_or_append_table_task", "upsert_table_task"}:
+        error_payload.setdefault("failed_type", "Data Ingestion")
+
     try:
         ckan_status_update_async(params, state="failed", message=error_payload)
     except Exception:
@@ -328,13 +333,23 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         ckan_status_update_async(
             config, state="running", message=f"Validating {fmt.upper()} records"
         )
-        report = ResourceValidator(
-            ckan_http_session,
-            fmt=fmt,
-            source_file=file_source,
-            schema=descriptor,
-            limit_errors=1000,
-        ).validate()
+        try:
+            report = ResourceValidator(
+                ckan_http_session,
+                fmt=fmt,
+                source_file=file_source,
+                schema=descriptor,
+                limit_errors=1000,
+            ).validate()
+        except Exception as exc:
+            raise AirflowException(
+                json.dumps(
+                    {
+                        "message": f"Records validation failed: {exc}",
+                        "failed_type": "Data Validation",
+                    }
+                )
+            ) from exc
         if not report.valid:
             report_dict = report.to_dict()
             task_stats = ((report_dict.get("tasks") or [{}])[0]).get("stats", {})
@@ -346,6 +361,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
                             report.stats.get("rows") or task_stats.get("rows", 0),
                             report.stats.get("errors") or task_stats.get("errors", 0),
                         ),
+                        "failed_type": "Data Validation",
                         "report": report_dict,
                     }
                 )

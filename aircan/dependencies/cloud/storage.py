@@ -236,7 +236,9 @@ class HttpToGCSStreamer:
                 with self.session.get(self.http_url, stream=True, timeout=self.timeout) as resp:
                     resp.raise_for_status()
                     resp.raw.decode_content = True
-                    text_in = codecs.getreader("utf-8")(resp.raw)
+                    # utf-8-sig strips an optional BOM once at the start while
+                    # otherwise decoding exactly like UTF-8.
+                    text_in = codecs.getreader("utf-8-sig")(resp.raw)
                     reader = csv.reader(text_in, delimiter=in_sep)
 
                     buf = io.StringIO()

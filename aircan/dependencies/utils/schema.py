@@ -90,6 +90,13 @@ def _sanitize_frictionless_descriptor(descriptor: Mapping[str, Any]) -> dict:
 
     updated_descriptor = dict(descriptor)
     updated_descriptor["fields"] = sanitized_fields
+    primary_key = updated_descriptor.get("primaryKey")
+    if isinstance(primary_key, str):
+        updated_descriptor["primaryKey"] = sanitize_column_name(primary_key)
+    elif isinstance(primary_key, list):
+        updated_descriptor["primaryKey"] = [
+            sanitize_column_name(str(key)) for key in primary_key
+        ]
     return updated_descriptor
 
 
@@ -134,18 +141,18 @@ def descriptor_from_arrow_schema(arrow_schema, system_columns: List[str]) -> dic
 
 
 def extract_primary_keys_from_schema(schema_descriptor: dict) -> List[str]:
-    """Extract primary key field names from schema descriptor.
-
-    Looks for fields with constraints.unique = True
+    """Extract sanitized primary key field names from a schema descriptor.
 
     Args:
         schema_descriptor: Frictionless schema descriptor dict
 
     Returns:
-        List of field names marked as unique in constraints
+        List of primary key field names
     """
-    primary_keys = []
-    return schema_descriptor.get("primaryKey") 
+    primary_keys = schema_descriptor.get("primaryKey") or []
+    if isinstance(primary_keys, str):
+        primary_keys = [primary_keys]
+    return [sanitize_column_name(str(key)) for key in primary_keys]
 
 
 def schema_fields_from_descriptor(

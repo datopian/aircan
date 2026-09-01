@@ -7,7 +7,7 @@ import re
 import requests
 
 from datetime import timedelta, datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 from airflow import DAG
 from airflow.sdk import task, get_current_context
 from airflow.task.trigger_rule import TriggerRule
@@ -47,7 +47,10 @@ from aircan.dependencies.cloud.warehouse import (
     export_bq_to_gcs,
     get_table_header,
 )
-from aircan.dependencies.utils.ckan import ckan_status_update_async
+from aircan.dependencies.utils.ckan import (
+    ckan_status_update_async,
+    update_resource_last_modified,
+)
 from aircan.dependencies.utils.email import send_email, build_alert_html
 from aircan.dependencies.utils.validation import ResourceValidator
 
@@ -61,7 +64,7 @@ DEFAULT_PARAMS = {
         "url": "https://example.com/dataset/266c57d5-ea6a-4b16-89e6-2f9e072f333d/resource/c8efed04-7100-4d85-9615-c6f12a7abe18/download/date.csv",
         "format": "",  # optional explicit format override: "csv", "json", or "parquet"
         "schema": {},
-        "ingestion_mode": "replace", # or "append" or "upsert"
+        "ingestion_mode": "replace",  # or "append" or "upsert"
     },
     "ckan_config": {
         "site_url": "https://ckan.com",
@@ -399,7 +402,9 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         and field.get("format") not in ("default", "any")
     }
     if date_formats:
-        logger.info("Reformatting date columns to ISO at positions: %s", list(date_formats))
+        logger.info(
+            "Reformatting date columns to ISO at positions: %s", list(date_formats)
+        )
 
     # Emit the source columns in the schema's field order, aligned to the source
     # by (sanitized) header/key name rather than source position. This lets
@@ -580,6 +585,15 @@ def upsert_table_task() -> None:
     ckan_status_update_async(config, state="running", message="Upsert complete")
 
 
+@task(
+    task_id="update_ckan_resource_task",
+    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+)
+def update_ckan_resource_task() -> None:
+    config, _ = _get_task_context()
+    update_resource_last_modified(config)
+
+
 @task(task_id="cleanup_gcs", trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS)
 def cleanup_gcs_task() -> None:
     config, prepare_result = _get_task_context()
@@ -708,9 +722,10 @@ with DAG(
     branch = branch_write_method()
     append = replace_or_append_table_task()
     upsert = upsert_table_task()
+    update_ckan_resource = update_ckan_resource_task()
     cleanup = cleanup_gcs_task()
     publish = export_and_publish_task()
 
     config >> prepare >> branch
     branch >> [append, upsert]
-    [append, upsert] >> publish >> cleanup
+    [append, upsert] >> update_ckan_resource >> publish >> cleanup

@@ -2,12 +2,49 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 import requests
 from airflow.sdk import BaseHook
 
 logger = logging.getLogger(__name__)
+
+
+def update_resource_last_modified(
+    config: Mapping[str, Any], modified_at: datetime | None = None
+) -> None:
+    """Stamp the CKAN resource after a successful warehouse write."""
+    ckan_config = config.get("ckan_config", {})
+    resource_dict = config.get("resource", {})
+    ckan_url = ckan_config.get("site_url")
+    resource_id = resource_dict.get("id")
+    if not ckan_url or not resource_id:
+        raise ValueError("CKAN site_url and resource id are required")
+
+    site_id = ckan_config.get("site_id", "")
+    conn = BaseHook.get_connection(f"{site_id}_api_key")
+    ckan_api_key = conn.password if conn else None
+    if not ckan_api_key:
+        raise RuntimeError("CKAN API key is required to update the resource")
+
+    timestamp = modified_at or datetime.now(timezone.utc)
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+    response = requests.post(
+        ckan_url.rstrip("/") + "/api/3/action/resource_patch",
+        json={"id": resource_id, "last_modified": timestamp.isoformat()},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": ckan_api_key,
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    result = response.json()
+    if not result.get("success"):
+        raise RuntimeError(f"CKAN resource_patch failed: {result.get('error')}")
+    logger.info("CKAN resource last_modified updated: resource_id=%s", resource_id)
 
 
 def ckan_status_update_async(
@@ -75,4 +112,6 @@ def ckan_status_update_async(
                 message,
             )
     except Exception:
-        logger.warning("CKAN status update failed (non-fatal). state=%s", state, exc_info=True)
+        logger.warning(
+            "CKAN status update failed (non-fatal). state=%s", state, exc_info=True
+        )

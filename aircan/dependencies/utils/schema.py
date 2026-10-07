@@ -49,9 +49,13 @@ def _load_frictionless_descriptor(schema_arg: Any) -> dict:
 
 
 def sanitize_column_name(name: str) -> str:
-    """Sanitize column name for BigQuery compliance."""
+    """Sanitize column name for BigQuery compliance.
+
+    Spaces are kept as-is (BigQuery flexible column names allow them); every
+    other character outside [A-Za-z0-9_] becomes "_".
+    """
     name = name.strip()
-    name = re.sub(r"[^a-zA-Z0-9_]+", "_", name)
+    name = re.sub(r"[^a-zA-Z0-9_ ]+", "_", name)
     name = re.sub(r"_+", "_", name).strip("_")
     if not re.match(r"^[A-Za-z_]", name):
         name = f"f_{name}"

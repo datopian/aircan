@@ -572,6 +572,7 @@ def upsert_table_task() -> None:
         ),
         skip_leading_rows,
         preserve_columns=[row_number_column] if row_number_column else None,
+        row_number_column=row_number_column,
         record_updated_at_column=prepare_result.get("record_updated_at_column"),
         job_timestamp=job_timestamp,
         source_format=source_format,

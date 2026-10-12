@@ -467,12 +467,15 @@ def merge_upsert_anyvalue_dedup(
     preserve_columns: Optional[List[str]] = None,
     record_updated_at_column: Optional[str] = None,
     job_timestamp: Optional[datetime] = None,
+    row_number_column: Optional[str] = None,
 ) -> None:
     """MERGE stage → target with change detection and record_updated_at tracking.
 
     preserve_columns: excluded from UPDATE SET (e.g. _row_number), still included in INSERT.
     record_updated_at_column: set to job_timestamp on INSERT and on matched-but-changed rows;
         left unchanged for matched rows where no data column changed.
+    row_number_column: allocate MAX + 1..N only to new, deduplicated keys;
+        staged row numbers are ordering hints, not the final inserted IDs.
     """
     stage_table = client.get_table(stage_fqn)
     # The stage physically carries record_updated_at (baked in at stream time),
@@ -521,6 +524,15 @@ def merge_upsert_anyvalue_dedup(
     insert_val_exprs = [f"S.`{c}`" for c in cols] + (
         ["@job_ts"] if record_updated_at_column else []
     )
+    if row_number_column:
+        if row_number_column not in cols or row_number_column not in _preserve:
+            raise ValueError("row_number_column must be a preserved staging column")
+        if row_number_column in primary_keys:
+            raise ValueError("row_number_column cannot be a primary key")
+        insert_val_exprs[cols.index(row_number_column)] = (
+            f"(SELECT COALESCE(MAX(`{row_number_column}`), 0) FROM `{target_fqn}`) "
+            "+ S._aircan_insert_rn"
+        )
     insert_cols = ", ".join([f"`{c}`" for c in insert_col_names])
     insert_vals = ", ".join(insert_val_exprs)
 
@@ -529,14 +541,32 @@ def merge_upsert_anyvalue_dedup(
         [f"ANY_VALUE(`{c}`) AS `{c}`" for c in non_key_cols]
     )
 
-    sql = f"""
-    MERGE `{target_fqn}` T
-    USING (
+    source_sql = f"""
       SELECT
         {key_select},
         {any_select}
       FROM `{stage_fqn}`
       GROUP BY {key_select}
+    """
+    if row_number_column:
+        # Probe after deduplication: existing keys must not consume IDs, and
+        # repeated source keys must consume only one. Use staged numbers only
+        # to retain source ordering within the new-key partition.
+        probe_on = " AND ".join(f"D.`{k}` = X.`{k}`" for k in primary_keys)
+        source_sql = f"""
+      SELECT D.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY X.`{primary_keys[0]}` IS NULL
+          ORDER BY D.`{row_number_column}`
+        ) AS _aircan_insert_rn
+      FROM ({source_sql}) D
+      LEFT JOIN `{target_fqn}` X ON {probe_on}
+        """
+
+    sql = f"""
+    MERGE `{target_fqn}` T
+    USING (
+      {source_sql}
     ) S
     ON {on_clause}
     WHEN MATCHED AND (
@@ -842,6 +872,7 @@ def upsert_flow(
     job_timestamp: Optional[datetime] = None,
     source_format: str = "csv",
     schema_descriptor: Optional[dict] = None,
+    row_number_column: Optional[str] = None,
 ) -> None:
     """Complete upsert flow: load stage, merge to target."""
     logger.info("Loading into staging: %s", stage_fqn)
@@ -877,6 +908,7 @@ def upsert_flow(
         preserve_columns=preserve_columns,
         record_updated_at_column=record_updated_at_column,
         job_timestamp=job_timestamp,
+        row_number_column=row_number_column,
     )
 
     apply_table_options(client, target_fqn, schema_descriptor)

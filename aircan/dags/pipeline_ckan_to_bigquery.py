@@ -47,7 +47,7 @@ from aircan.dependencies.cloud.warehouse import (
     export_bq_to_gcs,
     get_table_header,
 )
-from aircan.dependencies.utils.ckan import ckan_status_update_async
+from aircan.dependencies.utils.ckan import ckan_status_update, ckan_status_update_async
 from aircan.dependencies.utils.email import send_email, build_alert_html
 from aircan.dependencies.utils.validation import ResourceValidator
 
@@ -128,14 +128,6 @@ def _run_suffix(ctx: Dict[str, Any]) -> str:
 # ----------------------------
 # Airflow callbacks
 # ----------------------------
-
-
-def dag_success_callback(context: Dict[str, Any]) -> None:
-    ckan_status_update_async(
-        context.get("params"),
-        state="success",
-        message="Pipeline completed successfully",
-    )
 
 
 def _notify_failure(context: Dict[str, Any]) -> None:
@@ -695,13 +687,36 @@ def export_and_publish_task() -> None:
     )
 
 
+@task(
+    task_id="notify_success",
+    retries=5,
+    retry_delay=timedelta(seconds=30),
+    retry_exponential_backoff=True,
+)
+def notify_success_task() -> None:
+    """
+    Report success to CKAN, which sets the resource's datastore_active flag
+    and creates its datastore views.
+
+    Runs as a task rather than a DAG-level on_success_callback: Airflow runs
+    those in the DAG processor, where they can silently not fire, leaving CKAN
+    stuck on "running" while the run shows as successful. Here a failed request
+    raises, so it is retried and, if CKAN stays unreachable, fails the run.
+    """
+    config, _ = _get_task_context()
+    ckan_status_update(
+        config,
+        state="success",
+        message="Pipeline completed successfully",
+    )
+
+
 with DAG(
     dag_id=DAG_ID,
     schedule=None,
     catchup=False,
     tags=["bigquery", "gcs", "csv", "json", "parquet"],
     default_args=DEFAULT_ARGS,
-    on_success_callback=dag_success_callback,
     on_failure_callback=dag_run_failure_callback,
 ) as dag:
     config = collect_config_task()
@@ -711,7 +726,8 @@ with DAG(
     upsert = upsert_table_task()
     cleanup = cleanup_gcs_task()
     publish = export_and_publish_task()
+    notify = notify_success_task()
 
     config >> prepare >> branch
     branch >> [append, upsert]
-    [append, upsert] >> publish >> cleanup
+    [append, upsert] >> publish >> cleanup >> notify

@@ -71,7 +71,7 @@ def _cell_text(value) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
-def _error_table_html(labels: list, errors: list) -> str:
+def _error_table_html(labels: list, errors: list, report_url: str = "") -> str:
     """Failing rows with the offending cells highlighted, as in the portal UI."""
     rows: dict[int, dict] = {}
     for err in errors:
@@ -112,8 +112,13 @@ def _error_table_html(labels: list, errors: list) -> str:
             f'<tr><td class="text-primary border" style="padding:6px 10px;font-size:13px;font-weight:600;color:#111827;border-bottom:1px solid #eef0f3;">{row_number}</td>{cells}</tr>'
         )
     extra = len(ordered) - _MAX_TABLE_ROWS
+    rest = (
+        f'<a href="{_html.escape(report_url, quote=True)}" style="color:#b91c1c;">Open the validation report</a> for the rest.'
+        if report_url
+        else "Open the validation report in the portal for the rest."
+    )
     note = (
-        f'<p style="margin:6px 0 0;font-size:12px;color:#6b7280;">Showing {_MAX_TABLE_ROWS} of {len(ordered)} failing rows. Open the validation report in the portal for the rest.</p>'
+        f'<p class="text-secondary" style="margin:6px 0 0;font-size:12px;color:#6b7280;">Showing {_MAX_TABLE_ROWS} of {len(ordered)} failing rows. {rest}</p>'
         if extra > 0
         else ""
     )
@@ -124,7 +129,7 @@ def _error_table_html(labels: list, errors: list) -> str:
     )
 
 
-def _report_html(report: dict | None) -> str:
+def _report_html(report: dict | None, report_url: str = "") -> str:
     """Mirror the portal's validation report page: errors grouped by type with
     a count, title, description, message list and failing-row table."""
     tasks = [t for t in (report or {}).get("tasks") or [] if isinstance(t, dict)]
@@ -160,14 +165,16 @@ def _report_html(report: dict | None) -> str:
                 {description}
                 <div class="text-secondary" style="color:#6b7280;font-size:12px;letter-spacing:.04em;text-transform:uppercase;margin:12px 0 4px;">Full list of error messages</div>
                 <ul class="text-primary" style="margin:0;padding-left:18px;color:#111827;font-size:13px;">{messages}{more_note}</ul>
-                {_error_table_html(task.get("labels") or [], errors)}
+                {_error_table_html(task.get("labels") or [], errors, report_url)}
               </div>
             </td>
           </tr>"""
     return sections
 
 
-def build_alert_html(resource_id: str, error_payload: dict) -> str:
+def build_alert_html(
+    resource_id: str, error_payload: dict, report_url: str = ""
+) -> str:
     """Render the failure-alert email. Supports light + dark mode."""
     alert = alert_content(error_payload)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -198,7 +205,7 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
         else ""
     )
 
-    report_block = _report_html(error_payload.get("report"))
+    report_block = _report_html(error_payload.get("report"), report_url)
 
     return f"""<!DOCTYPE html>
 <html lang="en">

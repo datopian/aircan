@@ -48,7 +48,11 @@ from aircan.dependencies.cloud.warehouse import (
     get_table_header,
 )
 from aircan.dependencies.utils.ckan import ckan_status_update, ckan_status_update_async
-from aircan.dependencies.utils.email import send_email, build_alert_html
+from aircan.dependencies.utils.email import (
+    alert_content,
+    build_alert_html,
+    send_email,
+)
 from aircan.dependencies.utils.validation import ResourceValidator
 
 
@@ -169,7 +173,7 @@ def _notify_failure(context: Dict[str, Any]) -> None:
 
     send_email(
         to=recipients,
-        subject=f"Aircan pipeline failed: {resource_id}",
+        subject=alert_content(error_payload)["subject"],
         html_content=build_alert_html(resource_id, error_payload),
         from_email=others.get("notification_from_email", ""),
         conn_id=f"{site_id}_email",

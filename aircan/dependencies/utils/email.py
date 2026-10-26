@@ -29,12 +29,151 @@ def _meta_row(label: str, value: str, *, mono: bool = False) -> str:
                 </tr>"""
 
 
+VALIDATION_FAILED_TYPE = "Data Validation"
+
+_INGESTION_ALERT = {
+    "subject": "[Alert] NESO Data Portal data ingestion pipeline failed",
+    "title": "Data Ingestion Pipeline Failure",
+    "pill": "Ingestion Failed",
+    "description": "A data ingestion pipeline run encountered an error and stopped.",
+}
+_VALIDATION_ALERT = {
+    "subject": "[Alert] NESO Data Portal DQ Validation rule failed",
+    "title": "Data Quality Validation Rule Failure",
+    "pill": "Validation Failed",
+    "description": (
+        "A data quality validation rule failed and the pipeline run stopped."
+    ),
+}
+
+
+def alert_content(error_payload: dict) -> dict:
+    """Pick the email wording for a failure.
+
+    Anything not explicitly tagged as a validation failure is reported as an
+    ingestion failure, because tasks other than the load step (schema,
+    datatype, column id errors) raise without setting ``failed_type``.
+    """
+    if (error_payload or {}).get("failed_type") == VALIDATION_FAILED_TYPE:
+        return _VALIDATION_ALERT
+    return _INGESTION_ALERT
+
+
+# limit_errors=1000 upstream; unbounded rows would push the email past the
+# size mail clients clip at (~100KB).
+_MAX_LISTED_MESSAGES = 20
+_MAX_TABLE_ROWS = 10
+
+
+def _cell_text(value) -> str:
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _error_table_html(labels: list, errors: list) -> str:
+    """Failing rows with the offending cells highlighted, as in the portal UI."""
+    rows: dict[int, dict] = {}
+    for err in errors:
+        row_number = err.get("rowNumber")
+        if not row_number:
+            continue
+        row = rows.setdefault(row_number, {"cells": [], "fields": set()})
+        if err.get("fieldNumber"):
+            row["fields"].add(err["fieldNumber"])
+        if isinstance(err.get("cells"), list) and err["cells"]:
+            row["cells"] = err["cells"]
+
+    if not rows or not labels:
+        return ""
+
+    th = "padding:6px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #eef0f3;"
+    head = f'<th class="text-secondary border" style="{th}">Row</th>' + "".join(
+        f'<th class="text-secondary border" style="{th}">{_html.escape(str(label))}</th>'
+        for label in labels
+    )
+    ordered = sorted(rows.items())
+    body = ""
+    for row_number, row in ordered[:_MAX_TABLE_ROWS]:
+        cells = ""
+        for index in range(len(labels)):
+            # Highlighted cells set both colours inline: the dark-mode
+            # .text-primary override would otherwise turn the text white on
+            # the light red background.
+            failed = (index + 1) in row["fields"]
+            cls = "border" if failed else "text-primary border"
+            tone = "background:#fee2e2;color:#7f1d1d;" if failed else "color:#111827;"
+            value = row["cells"][index] if index < len(row["cells"]) else None
+            cells += (
+                f'<td class="{cls}" style="padding:6px 10px;font-size:13px;border-bottom:1px solid #eef0f3;{tone}">'
+                f"{_html.escape(_cell_text(value))}</td>"
+            )
+        body += (
+            f'<tr><td class="text-primary border" style="padding:6px 10px;font-size:13px;font-weight:600;color:#111827;border-bottom:1px solid #eef0f3;">{row_number}</td>{cells}</tr>'
+        )
+    extra = len(ordered) - _MAX_TABLE_ROWS
+    note = (
+        f'<p style="margin:6px 0 0;font-size:12px;color:#6b7280;">Showing {_MAX_TABLE_ROWS} of {len(ordered)} failing rows. Open the validation report in the portal for the rest.</p>'
+        if extra > 0
+        else ""
+    )
+    return (
+        '<div style="overflow-x:auto;margin-top:12px;">'
+        '<table width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;border:1px solid #eef0f3;">'
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>{note}"
+    )
+
+
+def _report_html(report: dict | None) -> str:
+    """Mirror the portal's validation report page: errors grouped by type with
+    a count, title, description, message list and failing-row table."""
+    tasks = [t for t in (report or {}).get("tasks") or [] if isinstance(t, dict)]
+    sections = ""
+    for task in tasks:
+        groups: dict[str, list] = {}
+        for err in task.get("errors") or []:
+            groups.setdefault(err.get("type") or "unknown-error", []).append(err)
+        for err_type, errors in groups.items():
+            first = errors[0]
+            messages = "".join(
+                f'<li style="margin:4px 0;">{_html.escape(str(e.get("message") or "Unknown error"))}</li>'
+                for e in errors[:_MAX_LISTED_MESSAGES]
+            )
+            more = len(errors) - _MAX_LISTED_MESSAGES
+            more_note = (
+                f'<li style="margin:4px 0;color:#6b7280;">and {more} more</li>'
+                if more > 0
+                else ""
+            )
+            description = (
+                f'<p class="text-secondary" style="margin:6px 0 0;color:#6b7280;font-size:13px;">{_html.escape(first["description"])}</p>'
+                if first.get("description")
+                else ""
+            )
+            sections += f"""
+          <tr>
+            <td style="padding:8px 32px 0;">
+              <div class="border" style="border:1px solid #fecaca;border-radius:8px;padding:14px 16px;">
+                <div class="text-primary" style="color:#111827;font-size:15px;font-weight:600;">
+                  <span style="display:inline-block;background:#fee2e2;color:#b91c1c;font-size:12px;border-radius:999px;padding:2px 9px;margin-right:8px;">{len(errors)}</span>{_html.escape(str(first.get("title") or err_type))}
+                </div>
+                {description}
+                <div class="text-secondary" style="color:#6b7280;font-size:12px;letter-spacing:.04em;text-transform:uppercase;margin:12px 0 4px;">Full list of error messages</div>
+                <ul class="text-primary" style="margin:0;padding-left:18px;color:#111827;font-size:13px;">{messages}{more_note}</ul>
+                {_error_table_html(task.get("labels") or [], errors)}
+              </div>
+            </td>
+          </tr>"""
+    return sections
+
+
 def build_alert_html(resource_id: str, error_payload: dict) -> str:
     """Render the failure-alert email. Supports light + dark mode."""
+    alert = alert_content(error_payload)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     error_message = error_payload.get("message", "") or ""
     run_id = error_payload.get("run_id", "")
-    failed_type = error_payload.get("failed_type", "")
+    failed_type = error_payload.get("failed_type") or "Data Ingestion"
 
     # The message often contains its own newlines (BQ summaries with bullet
     # points). Preserve them with white-space: pre-wrap inside the message block.
@@ -59,6 +198,8 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
         else ""
     )
 
+    report_block = _report_html(error_payload.get("report"))
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -66,7 +207,7 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <meta name="supported-color-schemes" content="light dark" />
-  <title>Pipeline Failure Alert</title>
+  <title>{_html.escape(alert["title"])}</title>
   <style>
     /* Dark-mode overrides — supported by Apple Mail, iOS Mail, Outlook 2019+,
        Thunderbird, and most modern web clients via prefers-color-scheme. */
@@ -118,13 +259,13 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
           <tr>
             <td class="header" style="background:#fff1f2;background:linear-gradient(135deg,#fff1f2 0%,#ffe4e6 100%);padding:28px 32px;">
               <div class="pill" style="display:inline-block;background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:5px 11px 5px 9px;border-radius:999px;margin-bottom:12px;line-height:1;">
-                <span class="pill-dot" style="display:inline-block;width:6px;height:6px;border-radius:999px;background:#dc2626;vertical-align:middle;margin-right:6px;margin-bottom:1px;"></span>Pipeline Failed
+                <span class="pill-dot" style="display:inline-block;width:6px;height:6px;border-radius:999px;background:#dc2626;vertical-align:middle;margin-right:6px;margin-bottom:1px;"></span>{_html.escape(alert["pill"])}
               </div>
               <h1 class="h-title" style="margin:0;color:#7f1d1d;font-size:22px;font-weight:700;letter-spacing:-.01em;line-height:1.3;">
-                Aircan Pipeline Failed
+                {_html.escape(alert["title"])}
               </h1>
               <p class="h-sub" style="margin:6px 0 0;color:#9f1239;font-size:14px;line-height:1.5;">
-                A scheduled data pipeline run encountered an error and stopped.
+                {_html.escape(alert["description"])}
               </p>
             </td>
           </tr>
@@ -140,6 +281,9 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
 
           <!-- Error message -->
           {message_block}
+
+          <!-- Validation report -->
+          {report_block}
 
           <!-- Spacer -->
           <tr><td style="padding:8px 0;"></td></tr>

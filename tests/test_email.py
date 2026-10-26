@@ -45,3 +45,57 @@ def test_untagged_failure_defaults_to_ingestion() -> None:
 
     assert "ingestion pipeline failed" in alert_content(payload)["subject"]
     assert "Data Ingestion" in build_alert_html("res-1", payload)
+
+
+def _report(n_errors: int = 1) -> dict:
+    return {
+        "tasks": [
+            {
+                "name": "data.csv",
+                "labels": ["id", "value"],
+                "errors": [
+                    {
+                        "type": "type-error",
+                        "title": "Type Error",
+                        "description": "Value does not match the field type.",
+                        "message": f'Type error in row {i}: "abc" is not an integer',
+                        "rowNumber": i,
+                        "fieldNumber": 2,
+                        "cells": [str(i), "abc"],
+                    }
+                    for i in range(2, 2 + n_errors)
+                ],
+            }
+        ]
+    }
+
+
+def test_validation_report_is_rendered_like_the_portal() -> None:
+    payload = {
+        "message": "Records validation failed. rows=5 errors=1",
+        "failed_type": "Data Validation",
+        "report": _report(),
+    }
+
+    html = build_alert_html("res-1", payload)
+
+    assert "Type Error" in html
+    assert "Value does not match the field type." in html
+    assert 'Type error in row 2: &quot;abc&quot; is not an integer' in html
+    assert "background:#fee2e2;" in html
+    assert "<th" in html
+
+
+def test_validation_report_is_capped() -> None:
+    payload = {"failed_type": "Data Validation", "report": _report(40)}
+
+    html = build_alert_html("res-1", payload)
+
+    assert "and 20 more" in html
+    assert "Showing 10 of 40 failing rows" in html
+
+
+def test_no_report_renders_no_report_section() -> None:
+    html = build_alert_html("res-1", {"message": "boom"})
+
+    assert "Full list of error messages" not in html

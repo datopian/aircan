@@ -88,22 +88,28 @@ def _error_table_html(labels: list, errors: list) -> str:
         return ""
 
     th = "padding:6px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #eef0f3;"
-    head = f'<th style="{th}">Row</th>' + "".join(
-        f'<th style="{th}">{_html.escape(str(label))}</th>' for label in labels
+    head = f'<th class="text-secondary border" style="{th}">Row</th>' + "".join(
+        f'<th class="text-secondary border" style="{th}">{_html.escape(str(label))}</th>'
+        for label in labels
     )
     ordered = sorted(rows.items())
     body = ""
     for row_number, row in ordered[:_MAX_TABLE_ROWS]:
         cells = ""
         for index in range(len(labels)):
-            bg = "background:#fee2e2;" if (index + 1) in row["fields"] else ""
+            # Highlighted cells set both colours inline: the dark-mode
+            # .text-primary override would otherwise turn the text white on
+            # the light red background.
+            failed = (index + 1) in row["fields"]
+            cls = "border" if failed else "text-primary border"
+            tone = "background:#fee2e2;color:#7f1d1d;" if failed else "color:#111827;"
             value = row["cells"][index] if index < len(row["cells"]) else None
             cells += (
-                f'<td style="padding:6px 10px;font-size:13px;border-bottom:1px solid #eef0f3;{bg}">'
+                f'<td class="{cls}" style="padding:6px 10px;font-size:13px;border-bottom:1px solid #eef0f3;{tone}">'
                 f"{_html.escape(_cell_text(value))}</td>"
             )
         body += (
-            f'<tr><td style="padding:6px 10px;font-size:13px;font-weight:600;border-bottom:1px solid #eef0f3;">{row_number}</td>{cells}</tr>'
+            f'<tr><td class="text-primary border" style="padding:6px 10px;font-size:13px;font-weight:600;color:#111827;border-bottom:1px solid #eef0f3;">{row_number}</td>{cells}</tr>'
         )
     extra = len(ordered) - _MAX_TABLE_ROWS
     note = (
@@ -113,7 +119,7 @@ def _error_table_html(labels: list, errors: list) -> str:
     )
     return (
         '<div style="overflow-x:auto;margin-top:12px;">'
-        '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #eef0f3;">'
+        '<table width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;border:1px solid #eef0f3;">'
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>{note}"
     )
 

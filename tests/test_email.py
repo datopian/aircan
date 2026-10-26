@@ -82,7 +82,7 @@ def test_validation_report_is_rendered_like_the_portal() -> None:
     assert "Type Error" in html
     assert "Value does not match the field type." in html
     assert 'Type error in row 2: &quot;abc&quot; is not an integer' in html
-    assert "background:#fee2e2;" in html
+    assert "background:#fee2e2;color:#7f1d1d;" in html
     assert "<th" in html
 
 

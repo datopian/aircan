@@ -99,12 +99,3 @@ def test_no_report_renders_no_report_section() -> None:
     html = build_alert_html("res-1", {"message": "boom"})
 
     assert "Full list of error messages" not in html
-
-
-def test_truncation_note_links_to_report_when_url_given() -> None:
-    payload = {"failed_type": "Data Validation", "report": _report(40)}
-    url = "https://ckan.example.com/dataset/pkg/resource_pipeline/res-1/validation_report"
-
-    html = build_alert_html("res-1", payload, url)
-
-    assert f'<a href="{url}"' in html

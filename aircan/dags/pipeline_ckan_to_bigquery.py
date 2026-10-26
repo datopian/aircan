@@ -171,19 +171,10 @@ def _notify_failure(context: Dict[str, Any]) -> None:
     )
     recipients = list(dict.fromkeys(recipients))
 
-    site_url = (params.get("ckan_config", {}).get("site_url") or "").rstrip("/")
-    package_id = params.get("resource", {}).get("package_id")
-    # Built from this run's own CKAN site_url so each environment links to itself.
-    report_url = (
-        f"{site_url}/dataset/{package_id}/resource_pipeline/{resource_id}/validation_report"
-        if site_url and package_id and resource_id != "unknown"
-        else ""
-    )
-
     send_email(
         to=recipients,
         subject=alert_content(error_payload)["subject"],
-        html_content=build_alert_html(resource_id, error_payload, report_url),
+        html_content=build_alert_html(resource_id, error_payload),
         from_email=others.get("notification_from_email", ""),
         conn_id=f"{site_id}_email",
     )

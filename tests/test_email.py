@@ -103,7 +103,7 @@ def test_no_report_renders_no_report_section() -> None:
 
 def test_truncation_note_links_to_report_when_url_given() -> None:
     payload = {"failed_type": "Data Validation", "report": _report(40)}
-    url = "https://portal.example.com/datasets/pkg/resources/res-1/validation-report"
+    url = "https://ckan.example.com/dataset/pkg/resource_pipeline/res-1/validation_report"
 
     html = build_alert_html("res-1", payload, url)
 

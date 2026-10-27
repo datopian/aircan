@@ -90,8 +90,7 @@ def test_validation_report_is_rendered_like_the_portal() -> None:
     assert "Type Error" in html
     assert "Value does not match the field type." in html
     assert 'Type error in row 2: &quot;abc&quot; is not an integer' in html
-    assert "background:#fee2e2;color:#7f1d1d;" in html
-    assert "<th" in html
+    assert "<table" not in html.split("Full list of error messages")[1]
 
 
 def test_validation_report_is_capped() -> None:
@@ -100,7 +99,7 @@ def test_validation_report_is_capped() -> None:
     html = build_alert_html("res-1", payload)
 
     assert "and 20 more" in html
-    assert "Showing 10 of 40 failing rows" in html
+    assert "failing rows" not in html
 
 
 def test_no_report_renders_no_report_section() -> None:

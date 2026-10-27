@@ -64,71 +64,11 @@ def alert_subject(error_payload: dict) -> str:
 # limit_errors=1000 upstream; unbounded rows would push the email past the
 # size mail clients clip at (~100KB).
 _MAX_LISTED_MESSAGES = 20
-_MAX_TABLE_ROWS = 10
-
-
-def _cell_text(value) -> str:
-    if value is None:
-        return ""
-    return value if isinstance(value, str) else json.dumps(value)
-
-
-def _error_table_html(labels: list, errors: list) -> str:
-    """Failing rows with the offending cells highlighted, as in the portal UI."""
-    rows: dict[int, dict] = {}
-    for err in errors:
-        row_number = err.get("rowNumber")
-        if not row_number:
-            continue
-        row = rows.setdefault(row_number, {"cells": [], "fields": set()})
-        if err.get("fieldNumber"):
-            row["fields"].add(err["fieldNumber"])
-        if isinstance(err.get("cells"), list) and err["cells"]:
-            row["cells"] = err["cells"]
-
-    if not rows or not labels:
-        return ""
-
-    th = "padding:6px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #eef0f3;"
-    head = f'<th class="text-secondary border" style="{th}">Row</th>' + "".join(
-        f'<th class="text-secondary border" style="{th}">{_html.escape(str(label))}</th>'
-        for label in labels
-    )
-    ordered = sorted(rows.items())
-    body = ""
-    for row_number, row in ordered[:_MAX_TABLE_ROWS]:
-        cells = ""
-        for index in range(len(labels)):
-            # Highlighted cells set both colours inline: the dark-mode
-            # .text-primary override would otherwise turn the text white on
-            # the light red background.
-            failed = (index + 1) in row["fields"]
-            cls = "border" if failed else "text-primary border"
-            tone = "background:#fee2e2;color:#7f1d1d;" if failed else "color:#111827;"
-            value = row["cells"][index] if index < len(row["cells"]) else None
-            cells += (
-                f'<td class="{cls}" style="padding:6px 10px;font-size:13px;border-bottom:1px solid #eef0f3;{tone}">'
-                f"{_html.escape(_cell_text(value))}</td>"
-            )
-        body += (
-            f'<tr><td class="text-primary border" style="padding:6px 10px;font-size:13px;font-weight:600;color:#111827;border-bottom:1px solid #eef0f3;">{row_number}</td>{cells}</tr>'
-        )
-    extra = len(ordered) - _MAX_TABLE_ROWS
-    note = (
-        f'<p style="margin:6px 0 0;font-size:12px;color:#6b7280;">Showing {_MAX_TABLE_ROWS} of {len(ordered)} failing rows. Open the validation report in the portal for the rest.</p>'
-        if extra > 0
-        else ""
-    )
-    return (
-        '<div style="overflow-x:auto;margin-top:12px;">'
-        '<table width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;border:1px solid #eef0f3;">'
-        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>{note}"
-    )
 
 
 def _report_html(report: dict | None) -> str:
     """Mirror the portal's validation report page: errors grouped by type with
-    a count, title, description, message list and failing-row table."""
+    a count, title, description and message list."""
     tasks = [t for t in (report or {}).get("tasks") or [] if isinstance(t, dict)]
     sections = ""
     for task in tasks:
@@ -162,7 +102,6 @@ def _report_html(report: dict | None) -> str:
                 {description}
                 <div class="text-secondary" style="color:#6b7280;font-size:12px;letter-spacing:.04em;text-transform:uppercase;margin:12px 0 4px;">Full list of error messages</div>
                 <ul class="text-primary" style="margin:0;padding-left:18px;color:#111827;font-size:13px;">{messages}{more_note}</ul>
-                {_error_table_html(task.get("labels") or [], errors)}
               </div>
             </td>
           </tr>"""

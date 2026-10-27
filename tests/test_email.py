@@ -13,38 +13,46 @@ if "airflow.sdk" not in sys.modules:
         airflow.sdk = sdk
         sys.modules.update({"airflow": airflow, "airflow.sdk": sdk})
 
-from aircan.dependencies.utils.email import alert_content, build_alert_html
+from aircan.dependencies.utils.email import alert_subject, build_alert_html
 
 
-def test_validation_failure_uses_dq_wording() -> None:
+def test_validation_failure_is_labelled_dq() -> None:
     payload = {"message": "bad rows", "failed_type": "Data Validation"}
 
     assert (
-        alert_content(payload)["subject"]
-        == "[Alert] NESO Data Portal DQ Validation rule failed"
+        alert_subject(payload)
+        == "Aircan data pipeline failure: Data Quality Validation Rule Failure"
     )
     html = build_alert_html("res-1", payload)
+    assert "Aircan Data Pipeline Failure Alert" in html
     assert "Data Quality Validation Rule Failure" in html
-    assert "Data Ingestion Pipeline Failure" not in html
+    assert "Data Ingestion Failure" not in html
 
 
-def test_ingestion_failure_uses_ingestion_wording() -> None:
+def test_ingestion_failure_is_labelled_ingestion() -> None:
     payload = {"message": "boom", "failed_type": "Data Ingestion"}
 
     assert (
-        alert_content(payload)["subject"]
-        == "[Alert] NESO Data Portal data ingestion pipeline failed"
+        alert_subject(payload)
+        == "Aircan data pipeline failure: Data Ingestion Failure"
     )
     html = build_alert_html("res-1", payload)
-    assert "Data Ingestion Pipeline Failure" in html
+    assert "Aircan Data Pipeline Failure Alert" in html
+    assert "Data Ingestion Failure" in html
     assert "Data Quality Validation Rule Failure" not in html
 
 
 def test_untagged_failure_defaults_to_ingestion() -> None:
     payload = {"message": "datatype mismatch"}
 
-    assert "ingestion pipeline failed" in alert_content(payload)["subject"]
-    assert "Data Ingestion" in build_alert_html("res-1", payload)
+    assert alert_subject(payload).endswith("Data Ingestion Failure")
+    assert "Data Ingestion Failure" in build_alert_html("res-1", payload)
+
+
+def test_email_has_no_client_specific_wording() -> None:
+    html = build_alert_html("res-1", {"message": "boom"})
+
+    assert "NESO" not in html
 
 
 def _report(n_errors: int = 1) -> dict:

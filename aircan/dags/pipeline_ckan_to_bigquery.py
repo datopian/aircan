@@ -49,7 +49,7 @@ from aircan.dependencies.cloud.warehouse import (
 )
 from aircan.dependencies.utils.ckan import ckan_status_update, ckan_status_update_async
 from aircan.dependencies.utils.email import (
-    alert_content,
+    alert_subject,
     build_alert_html,
     send_email,
 )
@@ -173,7 +173,7 @@ def _notify_failure(context: Dict[str, Any]) -> None:
 
     send_email(
         to=recipients,
-        subject=alert_content(error_payload)["subject"],
+        subject=alert_subject(error_payload),
         html_content=build_alert_html(resource_id, error_payload),
         from_email=others.get("notification_from_email", ""),
         conn_id=f"{site_id}_email",

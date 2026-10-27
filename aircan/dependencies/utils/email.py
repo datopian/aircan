@@ -31,16 +31,14 @@ def _meta_row(label: str, value: str, *, mono: bool = False) -> str:
 
 VALIDATION_FAILED_TYPE = "Data Validation"
 
+ALERT_TITLE = "Aircan Data Pipeline Failure Alert"
+
 _INGESTION_ALERT = {
-    "subject": "[Alert] NESO Data Portal data ingestion pipeline failed",
-    "title": "Data Ingestion Pipeline Failure",
-    "pill": "Ingestion Failed",
-    "description": "A data ingestion pipeline run encountered an error and stopped.",
+    "failure_type": "Data Ingestion Failure",
+    "description": "A data ingestion step failed and the pipeline run stopped.",
 }
 _VALIDATION_ALERT = {
-    "subject": "[Alert] NESO Data Portal DQ Validation rule failed",
-    "title": "Data Quality Validation Rule Failure",
-    "pill": "Validation Failed",
+    "failure_type": "Data Quality Validation Rule Failure",
     "description": (
         "A data quality validation rule failed and the pipeline run stopped."
     ),
@@ -57,6 +55,10 @@ def alert_content(error_payload: dict) -> dict:
     if (error_payload or {}).get("failed_type") == VALIDATION_FAILED_TYPE:
         return _VALIDATION_ALERT
     return _INGESTION_ALERT
+
+
+def alert_subject(error_payload: dict) -> str:
+    return f"Aircan data pipeline failure: {alert_content(error_payload)['failure_type']}"
 
 
 # limit_errors=1000 upstream; unbounded rows would push the email past the
@@ -173,14 +175,13 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     error_message = error_payload.get("message", "") or ""
     run_id = error_payload.get("run_id", "")
-    failed_type = error_payload.get("failed_type") or "Data Ingestion"
 
     # The message often contains its own newlines (BQ summaries with bullet
     # points). Preserve them with white-space: pre-wrap inside the message block.
     safe_message = _html.escape(error_message)
 
     meta_rows = (
-        _meta_row("Failed Type", failed_type)
+        _meta_row("Failure Type", alert["failure_type"])
         + _meta_row("Resource ID", resource_id, mono=True)
         + _meta_row("Time", timestamp)
         + _meta_row("Run", run_id, mono=True)
@@ -207,7 +208,7 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <meta name="supported-color-schemes" content="light dark" />
-  <title>{_html.escape(alert["title"])}</title>
+  <title>{ALERT_TITLE}</title>
   <style>
     /* Dark-mode overrides — supported by Apple Mail, iOS Mail, Outlook 2019+,
        Thunderbird, and most modern web clients via prefers-color-scheme. */
@@ -259,10 +260,10 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
           <tr>
             <td class="header" style="background:#fff1f2;background:linear-gradient(135deg,#fff1f2 0%,#ffe4e6 100%);padding:28px 32px;">
               <div class="pill" style="display:inline-block;background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:5px 11px 5px 9px;border-radius:999px;margin-bottom:12px;line-height:1;">
-                <span class="pill-dot" style="display:inline-block;width:6px;height:6px;border-radius:999px;background:#dc2626;vertical-align:middle;margin-right:6px;margin-bottom:1px;"></span>{_html.escape(alert["pill"])}
+                <span class="pill-dot" style="display:inline-block;width:6px;height:6px;border-radius:999px;background:#dc2626;vertical-align:middle;margin-right:6px;margin-bottom:1px;"></span>Pipeline Failed
               </div>
               <h1 class="h-title" style="margin:0;color:#7f1d1d;font-size:22px;font-weight:700;letter-spacing:-.01em;line-height:1.3;">
-                {_html.escape(alert["title"])}
+                {ALERT_TITLE}
               </h1>
               <p class="h-sub" style="margin:6px 0 0;color:#9f1239;font-size:14px;line-height:1.5;">
                 {_html.escape(alert["description"])}

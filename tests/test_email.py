@@ -136,3 +136,10 @@ def test_subject_includes_organization_name_when_given() -> None:
     )
     assert alert_subject(payload, "") == alert_subject(payload)
     assert "NESO" not in build_alert_html("res-1", payload)
+
+
+def test_blank_organization_name_is_treated_as_unset() -> None:
+    payload = {"message": "boom"}
+
+    assert alert_subject(payload, "   ") == alert_subject(payload)
+    assert alert_subject(payload, "  NESO ").startswith("[Alert] NESO Aircan")

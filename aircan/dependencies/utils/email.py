@@ -58,7 +58,7 @@ def alert_content(error_payload: dict) -> dict:
 
 
 def alert_subject(error_payload: dict) -> str:
-    return f"Aircan data pipeline failure: {alert_content(error_payload)['failure_type']}"
+    return f"[Alert] Aircan data pipeline failure: {alert_content(error_payload)['failure_type']}"
 
 
 # limit_errors=1000 upstream; unbounded rows would push the email past the

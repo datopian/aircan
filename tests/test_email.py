@@ -21,7 +21,7 @@ def test_validation_failure_is_labelled_dq() -> None:
 
     assert (
         alert_subject(payload)
-        == "Aircan data pipeline failure: Data Quality Validation Rule Failure"
+        == "[Alert] Aircan data pipeline failure: Data Quality Validation Rule Failure"
     )
     html = build_alert_html("res-1", payload)
     assert "Aircan Data Pipeline Failure Alert" in html
@@ -34,7 +34,7 @@ def test_ingestion_failure_is_labelled_ingestion() -> None:
 
     assert (
         alert_subject(payload)
-        == "Aircan data pipeline failure: Data Ingestion Failure"
+        == "[Alert] Aircan data pipeline failure: Data Ingestion Failure"
     )
     html = build_alert_html("res-1", payload)
     assert "Aircan Data Pipeline Failure Alert" in html

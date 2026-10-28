@@ -125,3 +125,14 @@ def test_no_report_renders_no_report_section() -> None:
     html = build_alert_html("res-1", {"message": "boom"}, "https://x/y")
 
     assert "full log" not in html
+
+
+def test_subject_includes_organization_name_when_given() -> None:
+    payload = {"message": "boom"}
+
+    assert (
+        alert_subject(payload, "NESO")
+        == "[Alert] NESO Aircan data pipeline failure: Data Ingestion Failure"
+    )
+    assert alert_subject(payload, "") == alert_subject(payload)
+    assert "NESO" not in build_alert_html("res-1", payload)

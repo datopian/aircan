@@ -78,31 +78,50 @@ def _report(n_errors: int = 1) -> dict:
     }
 
 
-def test_validation_report_is_rendered_like_the_portal() -> None:
+def test_validation_report_is_aggregated_by_error_type() -> None:
     payload = {
-        "message": "Records validation failed. rows=5 errors=1",
         "failed_type": "Data Validation",
-        "report": _report(),
+        "report": _report(3),
     }
 
     html = build_alert_html("res-1", payload)
 
     assert "Type Error" in html
     assert "Value does not match the field type." in html
-    assert 'Type error in row 2: &quot;abc&quot; is not an integer' in html
-    assert "<table" not in html.split("Full list of error messages")[1]
+    assert ">3</span>" in html
+    assert "is not an integer" not in html
+    assert "Full list of error messages" not in html
 
 
-def test_validation_report_is_capped() -> None:
-    payload = {"failed_type": "Data Validation", "report": _report(40)}
+def test_error_types_are_sorted_by_count() -> None:
+    report = _report(2)
+    report["tasks"][0]["errors"] += [
+        {"type": "missing-cell", "title": "Missing Cell", "message": f"m{i}"}
+        for i in range(5)
+    ]
 
-    html = build_alert_html("res-1", payload)
+    html = build_alert_html("res-1", {"report": report})
 
-    assert "and 20 more" in html
-    assert "failing rows" not in html
+    assert html.index("Missing Cell") < html.index("Type Error")
+
+
+def test_report_link_note_is_shown_when_url_given() -> None:
+    url = "https://portal.example/datasets/ds/resources/res-1/validation-report"
+    payload = {"failed_type": "Data Validation", "report": _report()}
+
+    html = build_alert_html("res-1", payload, url)
+
+    assert f'href="{url}"' in html
+    assert "full log" in html
+
+
+def test_no_link_note_without_url() -> None:
+    payload = {"failed_type": "Data Validation", "report": _report()}
+
+    assert "full log" not in build_alert_html("res-1", payload)
 
 
 def test_no_report_renders_no_report_section() -> None:
-    html = build_alert_html("res-1", {"message": "boom"})
+    html = build_alert_html("res-1", {"message": "boom"}, "https://x/y")
 
-    assert "Full list of error messages" not in html
+    assert "full log" not in html

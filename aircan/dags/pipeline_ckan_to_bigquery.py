@@ -174,7 +174,9 @@ def _notify_failure(context: Dict[str, Any]) -> None:
     send_email(
         to=recipients,
         subject=alert_subject(error_payload),
-        html_content=build_alert_html(resource_id, error_payload),
+        html_content=build_alert_html(
+            resource_id, error_payload, others.get("validation_report_url") or ""
+        ),
         from_email=others.get("notification_from_email", ""),
         conn_id=f"{site_id}_email",
     )

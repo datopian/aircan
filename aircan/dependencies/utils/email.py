@@ -57,8 +57,12 @@ def alert_content(error_payload: dict) -> dict:
     return _INGESTION_ALERT
 
 
-def alert_subject(error_payload: dict) -> str:
-    return f"[Alert] Aircan data pipeline failure: {alert_content(error_payload)['failure_type']}"
+def alert_subject(error_payload: dict, organization_name: str = "") -> str:
+    """The DAGs are shared between projects, so the client name comes from
+    config instead of being hardcoded."""
+    org_name = organization_name.strip() if organization_name else ""
+    org = f"{org_name} " if org_name else ""
+    return f"[Alert] {org}Aircan data pipeline failure: {alert_content(error_payload)['failure_type']}"
 
 
 def _report_html(report: dict | None, report_url: str = "") -> str:

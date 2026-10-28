@@ -61,38 +61,30 @@ def alert_subject(error_payload: dict) -> str:
     return f"[Alert] Aircan data pipeline failure: {alert_content(error_payload)['failure_type']}"
 
 
-# limit_errors=1000 upstream; unbounded rows would push the email past the
-# size mail clients clip at (~100KB).
-_MAX_LISTED_MESSAGES = 20
+def _report_html(report: dict | None, report_url: str = "") -> str:
+    """One card per error type with its count, title and description.
 
-
-def _report_html(report: dict | None) -> str:
-    """Mirror the portal's validation report page: errors grouped by type with
-    a count, title, description and message list."""
+    limit_errors=1000 upstream, so listing every message would push the email
+    past the size mail clients clip at (~100KB). The full list lives on the
+    validation report page in the portal admin, linked at the bottom.
+    """
     tasks = [t for t in (report or {}).get("tasks") or [] if isinstance(t, dict)]
-    sections = ""
+    groups: dict[str, list] = {}
     for task in tasks:
-        groups: dict[str, list] = {}
         for err in task.get("errors") or []:
             groups.setdefault(err.get("type") or "unknown-error", []).append(err)
-        for err_type, errors in groups.items():
-            first = errors[0]
-            messages = "".join(
-                f'<li style="margin:4px 0;">{_html.escape(str(e.get("message") or "Unknown error"))}</li>'
-                for e in errors[:_MAX_LISTED_MESSAGES]
-            )
-            more = len(errors) - _MAX_LISTED_MESSAGES
-            more_note = (
-                f'<li style="margin:4px 0;color:#6b7280;">and {more} more</li>'
-                if more > 0
-                else ""
-            )
-            description = (
-                f'<p class="text-secondary" style="margin:6px 0 0;color:#6b7280;font-size:13px;">{_html.escape(first["description"])}</p>'
-                if first.get("description")
-                else ""
-            )
-            sections += f"""
+    if not groups:
+        return ""
+
+    sections = ""
+    for err_type, errors in sorted(groups.items(), key=lambda g: -len(g[1])):
+        first = errors[0]
+        description = (
+            f'<p class="text-secondary" style="margin:6px 0 0;color:#6b7280;font-size:13px;">{_html.escape(first["description"])}</p>'
+            if first.get("description")
+            else ""
+        )
+        sections += f"""
           <tr>
             <td style="padding:8px 32px 0;">
               <div class="border" style="border:1px solid #fecaca;border-radius:8px;padding:14px 16px;">
@@ -100,15 +92,27 @@ def _report_html(report: dict | None) -> str:
                   <span style="display:inline-block;background:#fee2e2;color:#b91c1c;font-size:12px;border-radius:999px;padding:2px 9px;margin-right:8px;">{len(errors)}</span>{_html.escape(str(first.get("title") or err_type))}
                 </div>
                 {description}
-                <div class="text-secondary" style="color:#6b7280;font-size:12px;letter-spacing:.04em;text-transform:uppercase;margin:12px 0 4px;">Full list of error messages</div>
-                <ul class="text-primary" style="margin:0;padding-left:18px;color:#111827;font-size:13px;">{messages}{more_note}</ul>
               </div>
+            </td>
+          </tr>"""
+
+    if report_url:
+        safe_url = _html.escape(report_url, quote=True)
+        sections += f"""
+          <tr>
+            <td style="padding:12px 32px 0;">
+              <p class="text-secondary" style="margin:0;color:#6b7280;font-size:13px;line-height:1.5;">
+                This is a summary of the errors by type. To see the full log, open the
+                <a href="{safe_url}" style="color:#b91c1c;">validation report</a> in the portal admin.
+              </p>
             </td>
           </tr>"""
     return sections
 
 
-def build_alert_html(resource_id: str, error_payload: dict) -> str:
+def build_alert_html(
+    resource_id: str, error_payload: dict, report_url: str = ""
+) -> str:
     """Render the failure-alert email. Supports light + dark mode."""
     alert = alert_content(error_payload)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -138,7 +142,7 @@ def build_alert_html(resource_id: str, error_payload: dict) -> str:
         else ""
     )
 
-    report_block = _report_html(error_payload.get("report"))
+    report_block = _report_html(error_payload.get("report"), report_url)
 
     return f"""<!DOCTYPE html>
 <html lang="en">

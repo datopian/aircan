@@ -114,6 +114,32 @@ def _report_html(report: dict | None, report_url: str = "") -> str:
     return sections
 
 
+_REPORT_PATH = "/validation-report"
+_PIPELINE_PATH = "/aircan"
+
+
+def _pipeline_html(report_url: str) -> str:
+    """Note pointing ingestion failures at the Data Pipeline page.
+
+    CKAN only sends the validation report URL; the pipeline page lives under
+    the same resource path, so derive it instead of adding another setting.
+    Skipped when the URL has an unexpected shape rather than guessing.
+    """
+    if not report_url.endswith(_REPORT_PATH):
+        return ""
+    pipeline_url = report_url[: -len(_REPORT_PATH)] + _PIPELINE_PATH
+    safe_url = _html.escape(pipeline_url, quote=True)
+    return f"""
+          <tr>
+            <td style="padding:12px 32px 0;">
+              <p class="text-secondary" style="margin:0;color:#6b7280;font-size:13px;line-height:1.5;">
+                To see the pipeline log, open the
+                <a href="{safe_url}" style="color:#b91c1c;">data pipeline page</a> in the portal admin.
+              </p>
+            </td>
+          </tr>"""
+
+
 def build_alert_html(
     resource_id: str, error_payload: dict, report_url: str = ""
 ) -> str:
@@ -146,7 +172,10 @@ def build_alert_html(
         else ""
     )
 
-    report_block = _report_html(error_payload.get("report"), report_url)
+    if alert is _VALIDATION_ALERT:
+        report_block = _report_html(error_payload.get("report"), report_url)
+    else:
+        report_block = _pipeline_html(report_url)
 
     return f"""<!DOCTYPE html>
 <html lang="en">

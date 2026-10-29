@@ -100,7 +100,9 @@ def test_error_types_are_sorted_by_count() -> None:
         for i in range(5)
     ]
 
-    html = build_alert_html("res-1", {"report": report})
+    html = build_alert_html(
+        "res-1", {"failed_type": "Data Validation", "report": report}
+    )
 
     assert html.index("Missing Cell") < html.index("Type Error")
 
@@ -143,3 +145,30 @@ def test_blank_organization_name_is_treated_as_unset() -> None:
 
     assert alert_subject(payload, "   ") == alert_subject(payload)
     assert alert_subject(payload, "  NESO ").startswith("[Alert] NESO Aircan")
+
+
+def test_ingestion_failure_links_to_pipeline_page() -> None:
+    base = "https://portal.example/datasets/ds/resources/res-1"
+    html = build_alert_html(
+        "res-1", {"failed_type": "Data Ingestion"}, f"{base}/validation-report"
+    )
+
+    assert f'href="{base}/aircan"' in html
+    assert "validation-report" not in html
+
+
+def test_validation_failure_does_not_link_to_pipeline_page() -> None:
+    url = "https://portal.example/datasets/ds/resources/res-1/validation-report"
+    payload = {"failed_type": "Data Validation", "report": _report()}
+
+    html = build_alert_html("res-1", payload, url)
+
+    assert f'href="{url}"' in html
+    assert "/aircan" not in html
+
+
+def test_ingestion_link_skipped_for_unexpected_url_or_none() -> None:
+    payload = {"failed_type": "Data Ingestion"}
+
+    assert "pipeline log" not in build_alert_html("res-1", payload)
+    assert "pipeline log" not in build_alert_html("res-1", payload, "https://x/y")

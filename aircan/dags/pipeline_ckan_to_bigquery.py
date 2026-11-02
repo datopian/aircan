@@ -134,6 +134,12 @@ def _run_suffix(ctx: Dict[str, Any]) -> str:
 # ----------------------------
 
 
+def _resource_title(resource: Dict[str, Any]) -> str:
+    """Resources are usually labelled by ``name`` in CKAN, but some carry a
+    ``title`` too; prefer it and fall back to the name."""
+    return resource.get("title") or resource.get("name") or ""
+
+
 def _notify_failure(context: Dict[str, Any]) -> None:
     exc = context.get("exception")
     params = context.get("params") or {}
@@ -175,7 +181,10 @@ def _notify_failure(context: Dict[str, Any]) -> None:
         to=recipients,
         subject=alert_subject(error_payload, others.get("organization_name") or ""),
         html_content=build_alert_html(
-            resource_id, error_payload, others.get("validation_report_url") or ""
+            resource_id,
+            error_payload,
+            others.get("validation_report_url") or "",
+            _resource_title(params.get("resource") or {}),
         ),
         from_email=others.get("notification_from_email", ""),
         conn_id=f"{site_id}_email",

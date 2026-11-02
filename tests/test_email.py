@@ -200,3 +200,10 @@ def test_resource_title_is_escaped_and_optional() -> None:
     assert "&lt;b&gt;x&lt;/b&gt;" in html
     assert "Resource Title" not in build_alert_html("res-1", {"message": "boom"})
 
+
+def test_non_string_organization_name_is_treated_as_unset() -> None:
+    payload = {"message": "boom"}
+
+    for bad in (123, ["NESO"], {"name": "NESO"}, True):
+        assert alert_subject(payload, bad) == alert_subject(payload)
+

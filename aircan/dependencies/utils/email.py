@@ -62,7 +62,9 @@ def alert_subject(error_payload: dict, organization_name: str = "") -> str:
     config instead of being hardcoded. With a name the subject is
     ``[Alert] <name>: <failure type>``; without one it keeps the generic form."""
     failure_type = alert_content(error_payload)["failure_type"]
-    org_name = organization_name.strip() if organization_name else ""
+    # Non-strings (bad config) count as unset: raising here would skip the
+    # email entirely, since this runs inside the failure callback.
+    org_name = organization_name.strip() if isinstance(organization_name, str) else ""
     if org_name:
         return f"[Alert] {org_name}: {failure_type}"
     return f"[Alert] Aircan data pipeline failure: {failure_type}"

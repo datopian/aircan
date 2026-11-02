@@ -459,6 +459,52 @@ def resolve_primary_keys_from_stage(
     return user_keys
 
 
+def ensure_primary_keys_populated(
+    client: bigquery.Client, stage_fqn: str, primary_keys: List[str]
+) -> None:
+    """Reject the whole load when a primary key column has missing values.
+
+    The MERGE never matches a NULL key, so such rows would be inserted as new
+    and silently pile up on every run. Text columns also count blank cells as
+    missing, since BigQuery loads an empty CSV cell into STRING as ''.
+    """
+    if not primary_keys:
+        return
+
+    field_types = {f.name: f.field_type for f in client.get_table(stage_fqn).schema}
+
+    def is_missing(key: str) -> str:
+        condition = f"`{key}` IS NULL"
+        if field_types.get(key) == "STRING":
+            condition += f" OR TRIM(`{key}`) = ''"
+        return condition
+
+    per_key = ", ".join(
+        f"COUNTIF({is_missing(k)}) AS c{i}" for i, k in enumerate(primary_keys)
+    )
+    any_key = " OR ".join(f"({is_missing(k)})" for k in primary_keys)
+    row = next(
+        iter(
+            client.query(
+                f"SELECT COUNTIF({any_key}) AS total, {per_key} FROM `{stage_fqn}`"
+            ).result()
+        )
+    )
+    if not row["total"]:
+        return
+
+    detail = ", ".join(
+        f"`{k}` ({row[f'c{i}']} rows)"
+        for i, k in enumerate(primary_keys)
+        if row[f"c{i}"]
+    )
+    raise RuntimeError(
+        f"Upsert rejected: {row['total']} row(s) have empty values in primary key "
+        f"column(s): {detail}. Primary key columns need a value in every row. "
+        "No data was changed."
+    )
+
+
 def merge_upsert_anyvalue_dedup(
     client: bigquery.Client,
     target_fqn: str,
@@ -892,6 +938,8 @@ def upsert_flow(
         client, stage_fqn, primary_keys, debug=True
     )
     logger.info("Resolved UNIQUE_KEYS -> %s", primary_keys)
+
+    ensure_primary_keys_populated(client, stage_fqn, primary_keys)
 
     ensure_target_exists_from_stage(client, target_fqn, stage_fqn)
     stage_table = client.get_table(stage_fqn)

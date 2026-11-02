@@ -5,7 +5,11 @@ from unittest.mock import Mock, patch
 import pytest
 from google.cloud import bigquery
 
-from aircan.dependencies.cloud.warehouse import merge_upsert_anyvalue_dedup, upsert_flow
+from aircan.dependencies.cloud.warehouse import (
+    ensure_primary_keys_populated,
+    merge_upsert_anyvalue_dedup,
+    upsert_flow,
+)
 
 
 def render_merge(row_number_column="_id", updated_at=None):
@@ -105,6 +109,7 @@ def test_upsert_flow_forwards_custom_row_number_column():
     with (
         patch(f"{module}.load_gcs_to_bq_table"),
         patch(f"{module}.resolve_primary_keys_from_stage", return_value=["key"]),
+        patch(f"{module}.ensure_primary_keys_populated"),
         patch(f"{module}.ensure_target_exists_from_stage"),
         patch(f"{module}.ensure_table_has_fields"),
         patch(f"{module}.apply_table_options"),
@@ -115,3 +120,79 @@ def test_upsert_flow_forwards_custom_row_number_column():
             ["key"], None, 1, preserve_columns=["row_id"], row_number_column="row_id",
         )
     assert merge.call_args.kwargs["row_number_column"] == "row_id"
+
+
+def _key_check_client(counts, fields=None):
+    client = Mock()
+    client.get_table.return_value.schema = fields or [
+        bigquery.SchemaField("site_code", "STRING"),
+        bigquery.SchemaField("reading_number", "INT64"),
+    ]
+    client.query.return_value.result.return_value = [counts]
+    return client
+
+
+def test_primary_key_check_passes_when_every_key_has_a_value():
+    client = _key_check_client({"total": 0, "c0": 0, "c1": 0})
+
+    ensure_primary_keys_populated(client, "stage", ["site_code", "reading_number"])
+
+    sql = client.query.call_args.args[0]
+    assert "`site_code` IS NULL OR TRIM(`site_code`) = ''" in sql
+    # Blank-string handling only applies to text columns.
+    assert "TRIM(`reading_number`)" not in sql
+    assert "`reading_number` IS NULL" in sql
+
+
+def test_primary_key_check_rejects_missing_values_and_names_the_columns():
+    client = _key_check_client({"total": 5, "c0": 2, "c1": 4})
+
+    with pytest.raises(RuntimeError) as exc:
+        ensure_primary_keys_populated(client, "stage", ["site_code", "reading_number"])
+
+    message = str(exc.value)
+    assert "5 row(s)" in message
+    assert "`site_code` (2 rows)" in message
+    assert "`reading_number` (4 rows)" in message
+    assert "No data was changed" in message
+
+
+def test_primary_key_check_only_names_columns_with_missing_values():
+    client = _key_check_client({"total": 3, "c0": 0, "c1": 3})
+
+    with pytest.raises(RuntimeError) as exc:
+        ensure_primary_keys_populated(client, "stage", ["site_code", "reading_number"])
+
+    assert "site_code" not in str(exc.value)
+    assert "`reading_number` (3 rows)" in str(exc.value)
+
+
+def test_primary_key_check_is_skipped_without_keys():
+    client = Mock()
+
+    ensure_primary_keys_populated(client, "stage", [])
+
+    client.query.assert_not_called()
+
+
+def test_upsert_flow_rejects_before_touching_the_target():
+    module = "aircan.dependencies.cloud.warehouse"
+    with (
+        patch(f"{module}.load_gcs_to_bq_table"),
+        patch(f"{module}.resolve_primary_keys_from_stage", return_value=["key"]),
+        patch(
+            f"{module}.ensure_primary_keys_populated",
+            side_effect=RuntimeError("Upsert rejected"),
+        ),
+        patch(f"{module}.ensure_target_exists_from_stage") as ensure_target,
+        patch(f"{module}.merge_upsert_anyvalue_dedup") as merge,
+    ):
+        with pytest.raises(RuntimeError, match="Upsert rejected"):
+            upsert_flow(
+                Mock(), "gs://bucket/test.csv", "NONE", "target", "stage",
+                ["key"], None, 1,
+            )
+
+    ensure_target.assert_not_called()
+    merge.assert_not_called()
+

@@ -172,3 +172,20 @@ def test_ingestion_link_skipped_for_unexpected_url_or_none() -> None:
 
     assert "pipeline log" not in build_alert_html("res-1", payload)
     assert "pipeline log" not in build_alert_html("res-1", payload, "https://x/y")
+
+
+def test_resource_title_is_shown_below_resource_id() -> None:
+    html = build_alert_html("res-1", {"message": "boom"}, resource_title="Daily prices")
+
+    assert "Resource Title" in html
+    assert "Daily prices" in html
+    assert html.index("Resource ID") < html.index("Resource Title")
+
+
+def test_resource_title_is_escaped_and_optional() -> None:
+    html = build_alert_html("res-1", {"message": "boom"}, resource_title="<b>x</b>")
+
+    assert "<b>x</b>" not in html
+    assert "&lt;b&gt;x&lt;/b&gt;" in html
+    assert "Resource Title" not in build_alert_html("res-1", {"message": "boom"})
+

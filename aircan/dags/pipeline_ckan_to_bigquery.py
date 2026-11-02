@@ -175,7 +175,10 @@ def _notify_failure(context: Dict[str, Any]) -> None:
         to=recipients,
         subject=alert_subject(error_payload, others.get("organization_name") or ""),
         html_content=build_alert_html(
-            resource_id, error_payload, others.get("validation_report_url") or ""
+            resource_id,
+            error_payload,
+            others.get("validation_report_url") or "",
+            params.get("resource", {}).get("name") or "",
         ),
         from_email=others.get("notification_from_email", ""),
         conn_id=f"{site_id}_email",

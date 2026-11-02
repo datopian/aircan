@@ -141,7 +141,10 @@ def _pipeline_html(report_url: str) -> str:
 
 
 def build_alert_html(
-    resource_id: str, error_payload: dict, report_url: str = ""
+    resource_id: str,
+    error_payload: dict,
+    report_url: str = "",
+    resource_title: str = "",
 ) -> str:
     """Render the failure-alert email. Supports light + dark mode."""
     alert = alert_content(error_payload)
@@ -156,6 +159,7 @@ def build_alert_html(
     meta_rows = (
         _meta_row("Failure Type", alert["failure_type"])
         + _meta_row("Resource ID", resource_id, mono=True)
+        + _meta_row("Resource Title", resource_title)
         + _meta_row("Time", timestamp)
         + _meta_row("Run", run_id, mono=True)
     )

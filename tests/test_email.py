@@ -129,12 +129,23 @@ def test_no_report_renders_no_report_section() -> None:
     assert "full log" not in html
 
 
-def test_subject_includes_organization_name_when_given() -> None:
+def test_subject_uses_organization_name_when_given() -> None:
+    assert (
+        alert_subject({"message": "boom"}, "NESO Data Portal")
+        == "[Alert] NESO Data Portal: Data Ingestion Failure"
+    )
+    assert (
+        alert_subject({"failed_type": "Data Validation"}, "NESO Data Portal")
+        == "[Alert] NESO Data Portal: Data Quality Validation Rule Failure"
+    )
+
+
+def test_subject_without_organization_name_keeps_default() -> None:
     payload = {"message": "boom"}
 
     assert (
-        alert_subject(payload, "NESO")
-        == "[Alert] NESO Aircan data pipeline failure: Data Ingestion Failure"
+        alert_subject(payload)
+        == "[Alert] Aircan data pipeline failure: Data Ingestion Failure"
     )
     assert alert_subject(payload, "") == alert_subject(payload)
     assert "NESO" not in build_alert_html("res-1", payload)
@@ -144,7 +155,7 @@ def test_blank_organization_name_is_treated_as_unset() -> None:
     payload = {"message": "boom"}
 
     assert alert_subject(payload, "   ") == alert_subject(payload)
-    assert alert_subject(payload, "  NESO ").startswith("[Alert] NESO Aircan")
+    assert alert_subject(payload, "  NESO ") == "[Alert] NESO: Data Ingestion Failure"
 
 
 def test_ingestion_failure_links_to_pipeline_page() -> None:

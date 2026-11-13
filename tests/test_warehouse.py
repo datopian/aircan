@@ -271,3 +271,40 @@ def test_append_flow_rejects_new_column_before_inserting():
                 system_columns=["_id"],
             )
     client.query.assert_not_called()
+    client.delete_table.assert_called_once_with("stage", not_found_ok=True)
+
+
+def test_append_flow_keeps_the_column_error_when_stage_cleanup_fails():
+    module = "aircan.dependencies.cloud.warehouse"
+    client = Mock()
+    client.get_table.side_effect = [_table_with("_id", "a", "b"), _table_with("_id", "a")]
+    client.delete_table.side_effect = RuntimeError("cleanup failed")
+    with (
+        patch(f"{module}.load_gcs_to_bq_table"),
+        patch(f"{module}.ensure_target_exists_from_stage"),
+    ):
+        with pytest.raises(ColumnMismatchError):
+            append_flow(
+                client, "gs://bucket/test.csv", "NONE", "target", "stage", None, 1,
+                system_columns=["_id"],
+            )
+
+
+def test_upsert_flow_drops_the_stage_table_on_column_mismatch():
+    module = "aircan.dependencies.cloud.warehouse"
+    client = Mock()
+    client.get_table.side_effect = [_table_with("_id", "a", "b"), _table_with("_id", "a")]
+    with (
+        patch(f"{module}.load_gcs_to_bq_table"),
+        patch(f"{module}.resolve_primary_keys_from_stage", return_value=["a"]),
+        patch(f"{module}.ensure_primary_keys_populated"),
+        patch(f"{module}.ensure_target_exists_from_stage"),
+        patch(f"{module}.merge_upsert_anyvalue_dedup") as merge,
+    ):
+        with pytest.raises(ColumnMismatchError):
+            upsert_flow(
+                client, "gs://bucket/test.csv", "NONE", "target", "stage",
+                ["a"], None, 1, system_columns=["_id"],
+            )
+    merge.assert_not_called()
+    client.delete_table.assert_called_once_with("stage", not_found_ok=True)

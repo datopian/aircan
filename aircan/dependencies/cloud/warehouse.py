@@ -476,6 +476,18 @@ def ensure_no_new_columns(
     ensure_table_has_fields(client, table_fqn, [f for f in fields if f.name in system])
 
 
+def drop_stage_table_quietly(client: bigquery.Client, stage_fqn: str) -> None:
+    """Delete the staging table, never raising.
+
+    Used on the failure path, where the caller is about to re-raise the real
+    error and a failed cleanup must not replace it.
+    """
+    try:
+        client.delete_table(stage_fqn, not_found_ok=True)
+    except Exception:
+        logger.warning("Could not delete staging table %s", stage_fqn, exc_info=True)
+
+
 def resolve_primary_keys_from_stage(
     client: bigquery.Client,
     stage_fqn: str,
@@ -828,7 +840,13 @@ def append_flow(
     stage_table = client.get_table(stage_fqn)
     # Columns are matched by name, so they may be reordered, but the set must be
     # the table's own: appending never adds a column.
-    ensure_no_new_columns(client, target_fqn, stage_table.schema, system_columns)
+    try:
+        ensure_no_new_columns(client, target_fqn, stage_table.schema, system_columns)
+    except ColumnMismatchError:
+        # The run is rejected, so the staged copy is useless; the next run would
+        # truncate it anyway, but do not leave it sitting in the dataset.
+        drop_stage_table_quietly(client, stage_fqn)
+        raise
 
     col_list = ", ".join(f"`{field.name}`" for field in stage_table.schema)
     logger.info("Appending into %s (columns: %s)", target_fqn, col_list)
@@ -991,7 +1009,11 @@ def upsert_flow(
     # Stage schema includes record_updated_at (baked in at stream time), so this
     # also guarantees that system column exists on target before the MERGE
     # references it. Any other column the target lacks fails the run.
-    ensure_no_new_columns(client, target_fqn, stage_table.schema, system_columns)
+    try:
+        ensure_no_new_columns(client, target_fqn, stage_table.schema, system_columns)
+    except ColumnMismatchError:
+        drop_stage_table_quietly(client, stage_fqn)
+        raise
 
     logger.info("Upserting into %s using UNIQUE_KEYS=%s", target_fqn, primary_keys)
     merge_upsert_anyvalue_dedup(

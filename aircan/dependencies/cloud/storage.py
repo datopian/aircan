@@ -61,7 +61,9 @@ def _reformat_temporal(value: str, fr_type: str, src_format: str) -> str:
     return dt.isoformat()
 
 
-def check_columns_match(source_names, expected_columns, system_columns=()):
+def check_columns_match(
+    source_names, expected_columns, system_columns=(), allow_missing=False
+):
     """Raise ColumnMismatchError unless the source has exactly the table's columns.
 
     Append and upsert load into an existing table and must not change its column
@@ -79,7 +81,9 @@ def check_columns_match(source_names, expected_columns, system_columns=()):
     expected = {str(c).strip() for c in expected_columns} - system
 
     new = sorted(source - expected)
-    missing = sorted(expected - source)
+    # JSON rows may legitimately omit keys (null-filled), so a row-level check
+    # passes allow_missing; a header or file schema never may.
+    missing = [] if allow_missing else sorted(expected - source)
     if not new and not missing:
         return
 
@@ -159,7 +163,9 @@ class HttpToGCSStreamer:
         )
         # Columns of the existing target table (append/upsert only). When set,
         # a CSV/TSV header or Parquet schema that adds or drops a column fails
-        # the run before anything is written. None for Replace and first loads.
+        # the run before anything is written, and a JSON row with a key the
+        # table lacks fails too (a JSON row that omits a key is null-filled).
+        # None for Replace and first loads.
         self.expected_columns = expected_columns
 
     def _blob(self):
@@ -172,7 +178,17 @@ class HttpToGCSStreamer:
         in schema order, pulling each value from the source by sanitized key
         (missing -> None -> NULL, extras dropped). Without it, falls back to the
         legacy behaviour: keep the source keys, dropping only system columns.
+
+        With ``expected_columns`` set (append/upsert), a key the table lacks
+        fails the run instead of being dropped by the projection.
         """
+        if self.expected_columns is not None:
+            check_columns_match(
+                obj.keys(),
+                self.expected_columns,
+                self.system_columns,
+                allow_missing=True,
+            )
         if self.field_order is not None:
             src = {sanitize_column_name(str(k)): v for k, v in obj.items()}
             return {name: src.get(name) for name in self.field_order}

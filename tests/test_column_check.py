@@ -49,3 +49,48 @@ def test_headers_are_sanitised_like_the_streamer_does():
 
 def test_blank_header_cells_are_ignored():
     check_columns_match(["a", "b", "c", " "], TABLE, SYSTEM)
+
+
+def test_missing_columns_are_tolerated_when_asked():
+    check_columns_match(["a"], TABLE, SYSTEM, allow_missing=True)
+
+
+def test_new_columns_still_fail_when_missing_ones_are_tolerated():
+    with pytest.raises(ColumnMismatchError, match="not in the table: d"):
+        check_columns_match(["a", "d"], TABLE, SYSTEM, allow_missing=True)
+
+
+def _streamer(expected):
+    from unittest.mock import Mock
+
+    from aircan.dependencies.cloud.storage import HttpToGCSStreamer
+
+    return HttpToGCSStreamer(
+        http_url="http://example.test/data.json",
+        storage_client=Mock(),
+        bucket_name="bucket",
+        object_name="obj",
+        row_number_column="_id",
+        ckan_http_session=Mock(),
+        fmt="ndjson",
+        system_columns=SYSTEM,
+        field_order=["a", "b", "c"],
+        expected_columns=expected,
+    )
+
+
+def test_json_row_with_an_unknown_key_is_rejected_not_dropped():
+    with pytest.raises(ColumnMismatchError, match="not in the table: d"):
+        _streamer(TABLE)._align_obj({"a": 1, "b": 2, "c": 3, "d": 4})
+
+
+def test_json_row_that_omits_a_key_is_null_filled():
+    assert _streamer(TABLE)._align_obj({"a": 1}) == {"a": 1, "b": None, "c": None}
+
+
+def test_json_rows_are_not_checked_without_expected_columns():
+    assert _streamer(None)._align_obj({"a": 1, "d": 4}) == {
+        "a": 1,
+        "b": None,
+        "c": None,
+    }

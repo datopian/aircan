@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 
 import requests
 
-from ..utils.schema import sanitize_column_name
+from ..utils.schema import ColumnMismatchError, sanitize_column_name
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,44 @@ def _reformat_temporal(value: str, fr_type: str, src_format: str) -> str:
     return dt.isoformat()
 
 
+def check_columns_match(
+    source_names, expected_columns, system_columns=(), allow_missing=False
+):
+    """Raise ColumnMismatchError unless the source has exactly the table's columns.
+
+    Append and upsert load into an existing table and must not change its column
+    set (only Replace or `datastore_create` may). Names are compared after the
+    same sanitising the streamer applies, order is ignored, and the
+    pipeline-managed system columns are left out of both sides since the source
+    may or may not carry them.
+    """
+    system = {str(c).strip() for c in system_columns if c}
+    source = {
+        sanitize_column_name(str(n))
+        for n in source_names
+        if str(n).strip() and str(n).strip() not in system
+    }
+    expected = {str(c).strip() for c in expected_columns} - system
+
+    new = sorted(source - expected)
+    # JSON rows may legitimately omit keys (null-filled), so a row-level check
+    # passes allow_missing; a header or file schema never may.
+    missing = [] if allow_missing else sorted(expected - source)
+    if not new and not missing:
+        return
+
+    parts = []
+    if new:
+        parts.append(f"column(s) not in the table: {', '.join(new)}")
+    if missing:
+        parts.append(f"column(s) missing from the file: {', '.join(missing)}")
+    raise ColumnMismatchError(
+        "The file's columns do not match the table (" + "; ".join(parts) + "). "
+        "Append and upsert cannot add or drop columns. Use Replace to refresh the "
+        "whole schema, or create new columns with datastore_create first."
+    )
+
+
 class HttpToGCSStreamer:
     """Streams an HTTP resource directly to GCS with row numbers injected."""
 
@@ -81,6 +119,7 @@ class HttpToGCSStreamer:
         record_updated_at_column: Optional[str] = None,
         job_timestamp: Optional[datetime] = None,
         field_order: Optional[list] = None,
+        expected_columns: Optional[list] = None,
     ):
         self.http_url = http_url
         self.storage_client = storage_client
@@ -122,6 +161,12 @@ class HttpToGCSStreamer:
         self.field_order = (
             [str(c).strip() for c in field_order] if field_order else None
         )
+        # Columns of the existing target table (append/upsert only). When set,
+        # a CSV/TSV header or Parquet schema that adds or drops a column fails
+        # the run before anything is written, and a JSON row with a key the
+        # table lacks fails too (a JSON row that omits a key is null-filled).
+        # None for Replace and first loads.
+        self.expected_columns = expected_columns
 
     def _blob(self):
         return self.storage_client.bucket(self.bucket_name).blob(self.object_name)
@@ -133,7 +178,17 @@ class HttpToGCSStreamer:
         in schema order, pulling each value from the source by sanitized key
         (missing -> None -> NULL, extras dropped). Without it, falls back to the
         legacy behaviour: keep the source keys, dropping only system columns.
+
+        With ``expected_columns`` set (append/upsert), a key the table lacks
+        fails the run instead of being dropped by the projection.
         """
+        if self.expected_columns is not None:
+            check_columns_match(
+                obj.keys(),
+                self.expected_columns,
+                self.system_columns,
+                allow_missing=True,
+            )
         if self.field_order is not None:
             src = {sanitize_column_name(str(k)): v for k, v in obj.items()}
             return {name: src.get(name) for name in self.field_order}
@@ -155,6 +210,12 @@ class HttpToGCSStreamer:
         ) as f:
             pf = pq.ParquetFile(f)
             original_schema = pf.schema_arrow
+            if self.expected_columns is not None:
+                check_columns_match(
+                    [field.name for field in original_schema],
+                    self.expected_columns,
+                    self.system_columns,
+                )
             if self.field_order is not None:
                 # Name-based alignment: emit columns in schema order, renamed to
                 # their sanitized (BigQuery-safe) names so BigQuery maps them to
@@ -251,6 +312,10 @@ class HttpToGCSStreamer:
                     # reformats declared date/time columns to ISO so BigQuery can
                     # parse them.
                     header = next(reader, [])
+                    if self.expected_columns is not None:
+                        check_columns_match(
+                            header, self.expected_columns, self.system_columns
+                        )
                     if self.field_order is not None:
                         # Name-based alignment: emit columns in schema order,
                         # pulling each from the source by sanitized header name

@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from airflow import DAG
 from airflow.sdk import task, get_current_context
 from airflow.task.trigger_rule import TriggerRule
-from airflow.exceptions import AirflowException
+from airflow.exceptions import AirflowException, AirflowFailException
 from airflow.sdk.bases.hook import BaseHook
 from airflow.sdk import ObjectStoragePath
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
@@ -20,6 +20,7 @@ from frictionless import resources, system
 from google.cloud import bigquery
 
 from aircan.dependencies.utils.schema import (
+    ColumnMismatchError,
     _load_frictionless_descriptor,
     _sanitize_frictionless_descriptor,
     build_schema_fields,
@@ -45,6 +46,7 @@ from aircan.dependencies.cloud.warehouse import (
     append_flow,
     upsert_flow,
     export_bq_to_gcs,
+    get_table_column_names,
     get_table_header,
 )
 from aircan.dependencies.utils.ckan import ckan_status_update, ckan_status_update_async
@@ -138,6 +140,24 @@ def _resource_title(resource: Dict[str, Any]) -> str:
     """Resources are usually labelled by ``name`` in CKAN, but some carry a
     ``title`` too; prefer it and fall back to the name."""
     return resource.get("title") or resource.get("name") or ""
+
+
+def _system_columns(prepare_result: Dict[str, Any]) -> List[str]:
+    return [
+        c
+        for c in (
+            prepare_result.get("row_number_column"),
+            prepare_result.get("record_updated_at_column"),
+        )
+        if c
+    ]
+
+
+def _column_mismatch_failure(exc: ColumnMismatchError) -> AirflowFailException:
+    """Fail the task without retries: re-running the same file cannot fix it."""
+    return AirflowFailException(
+        json.dumps({"message": str(exc), "failed_type": "Data Ingestion"})
+    )
 
 
 def _notify_failure(context: Dict[str, Any]) -> None:
@@ -424,23 +444,36 @@ def prepare_and_upload_task() -> Dict[str, Any]:
     if gcs_config.get("chunk_size"):
         streamer_kwargs["gcs_chunk_size"] = int(gcs_config["chunk_size"])
 
-    gcs_uri = HttpToGCSStreamer(
-        http_url=file_source,
-        storage_client=storage_client,
-        bucket_name=bucket,
-        object_name=object_name,
-        row_number_column=row_number_column,
-        ckan_http_session=ckan_http_session,
-        fmt=fmt,
-        start=start,
-        timeout=(http_connect_timeout, http_read_timeout),
-        date_formats=date_formats,
-        system_columns=system_columns,
-        record_updated_at_column=record_updated_at_column,
-        job_timestamp=job_timestamp,
-        field_order=field_order,
-        **streamer_kwargs,
-    ).stream()
+    # Append/upsert load into the existing table and may not change its column
+    # set; the streamer checks the file's header against these columns. Replace
+    # (and a first load, when the table does not exist yet) is free to differ.
+    expected_columns = (
+        get_table_column_names(bq, target_fqn)
+        if ingestion_mode in ("append", "upsert")
+        else None
+    )
+
+    try:
+        gcs_uri = HttpToGCSStreamer(
+            http_url=file_source,
+            storage_client=storage_client,
+            bucket_name=bucket,
+            object_name=object_name,
+            row_number_column=row_number_column,
+            ckan_http_session=ckan_http_session,
+            fmt=fmt,
+            start=start,
+            timeout=(http_connect_timeout, http_read_timeout),
+            date_formats=date_formats,
+            system_columns=system_columns,
+            record_updated_at_column=record_updated_at_column,
+            job_timestamp=job_timestamp,
+            field_order=field_order,
+            expected_columns=expected_columns,
+            **streamer_kwargs,
+        ).stream()
+    except ColumnMismatchError as exc:
+        raise _column_mismatch_failure(exc) from exc
 
     ckan_status_update_async(
         config, state="running", message=f"{fmt.upper()} uploaded: {gcs_uri}"
@@ -507,20 +540,24 @@ def replace_or_append_table_task() -> None:
     )
     if write_method == "append":
         # Append goes through a staging table and INSERTs into the target by
-        # column name, so the file's columns may be reordered and new columns
-        # may appear anywhere (see append_flow). Replace rebuilds the table, so
-        # it loads straight in — column order/new columns are inherently free.
-        append_flow(
-            client,
-            prepare_result["gcs_uri"],
-            prepare_result["compression"],
-            target,
-            table_fqn(project_id, dataset_id, f"{temp_table_prefix}{resource_id}"),
-            schema_fields,
-            skip_leading_rows,
-            source_format=source_format,
-            schema_descriptor=prepare_result["schema_descriptor"],
-        )
+        # column name, so the file's columns may be reordered but may not add or
+        # drop any (see append_flow). Replace rebuilds the table, so it loads
+        # straight in and may change the column set.
+        try:
+            append_flow(
+                client,
+                prepare_result["gcs_uri"],
+                prepare_result["compression"],
+                target,
+                table_fqn(project_id, dataset_id, f"{temp_table_prefix}{resource_id}"),
+                schema_fields,
+                skip_leading_rows,
+                source_format=source_format,
+                schema_descriptor=prepare_result["schema_descriptor"],
+                system_columns=_system_columns(prepare_result),
+            )
+        except ColumnMismatchError as exc:
+            raise _column_mismatch_failure(exc) from exc
     else:
         append_or_replace_flow(
             client,
@@ -565,26 +602,30 @@ def upsert_table_task() -> None:
     # Reuse the prepare task's timestamp so the MERGE's @job_ts matches the
     # record-updated-at values baked into the staged file.
     job_timestamp = datetime.fromisoformat(prepare_result["job_timestamp"])
-    upsert_flow(
-        client,
-        prepare_result["gcs_uri"],
-        prepare_result["compression"],
-        table_fqn(project_id, dataset_id, resource_id),
-        table_fqn(project_id, dataset_id, f"{temp_table_prefix}{resource_id}"),
-        extract_primary_keys_from_schema(schema_descriptor),
-        build_schema_fields(
-            schema_descriptor,
-            row_number_column,
-            prepare_result.get("record_updated_at_column"),
-        ),
-        skip_leading_rows,
-        preserve_columns=[row_number_column] if row_number_column else None,
-        row_number_column=row_number_column,
-        record_updated_at_column=prepare_result.get("record_updated_at_column"),
-        job_timestamp=job_timestamp,
-        source_format=source_format,
-        schema_descriptor=schema_descriptor,
-    )
+    try:
+        upsert_flow(
+            client,
+            prepare_result["gcs_uri"],
+            prepare_result["compression"],
+            table_fqn(project_id, dataset_id, resource_id),
+            table_fqn(project_id, dataset_id, f"{temp_table_prefix}{resource_id}"),
+            extract_primary_keys_from_schema(schema_descriptor),
+            build_schema_fields(
+                schema_descriptor,
+                row_number_column,
+                prepare_result.get("record_updated_at_column"),
+            ),
+            skip_leading_rows,
+            preserve_columns=[row_number_column] if row_number_column else None,
+            row_number_column=row_number_column,
+            record_updated_at_column=prepare_result.get("record_updated_at_column"),
+            job_timestamp=job_timestamp,
+            source_format=source_format,
+            schema_descriptor=schema_descriptor,
+            system_columns=_system_columns(prepare_result),
+        )
+    except ColumnMismatchError as exc:
+        raise _column_mismatch_failure(exc) from exc
     ckan_status_update_async(config, state="running", message="Upsert complete")
 
 

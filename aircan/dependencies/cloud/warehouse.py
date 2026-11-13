@@ -10,6 +10,8 @@ from typing import List, Optional
 from google.api_core.exceptions import GoogleAPICallError, NotFound
 from google.cloud import bigquery
 
+from ..utils.schema import ColumnMismatchError
+
 logger = logging.getLogger(__name__)
 
 
@@ -434,6 +436,58 @@ def ensure_table_has_fields(
     logger.info("Added columns to %s: %s", table_fqn, ", ".join(f.name for f in to_add))
 
 
+def get_table_column_names(
+    client: bigquery.Client, table_fqn: str
+) -> Optional[List[str]]:
+    """Column names of an existing table, or None when it does not exist yet."""
+    try:
+        return [field.name for field in client.get_table(table_fqn).schema]
+    except NotFound:
+        return None
+
+
+def ensure_no_new_columns(
+    client: bigquery.Client,
+    table_fqn: str,
+    fields: List[bigquery.SchemaField],
+    system_columns: Optional[List[str]] = None,
+) -> None:
+    """Fail when the staged data carries a column the target table lacks.
+
+    Append and upsert never change the column set. The only column that may
+    still be added is a pipeline-managed system column, which tables created
+    before it existed can be missing.
+    """
+    try:
+        table = client.get_table(table_fqn)
+    except NotFound:
+        return
+
+    existing = {field.name for field in table.schema}
+    system = set(system_columns or [])
+    unknown = [f.name for f in fields if f.name not in existing and f.name not in system]
+    if unknown:
+        raise ColumnMismatchError(
+            f"Column(s) not in the table: {', '.join(unknown)}. Append and upsert "
+            "cannot add columns. Create them with datastore_create first, or use "
+            "Replace to refresh the whole schema."
+        )
+
+    ensure_table_has_fields(client, table_fqn, [f for f in fields if f.name in system])
+
+
+def drop_stage_table_quietly(client: bigquery.Client, stage_fqn: str) -> None:
+    """Delete the staging table, never raising.
+
+    Used on the failure path, where the caller is about to re-raise the real
+    error and a failed cleanup must not replace it.
+    """
+    try:
+        client.delete_table(stage_fqn, not_found_ok=True)
+    except Exception:
+        logger.warning("Could not delete staging table %s", stage_fqn, exc_info=True)
+
+
 def resolve_primary_keys_from_stage(
     client: bigquery.Client,
     stage_fqn: str,
@@ -753,15 +807,17 @@ def append_flow(
     skip_leading_rows: int,
     source_format: str = "csv",
     schema_descriptor: Optional[dict] = None,
+    system_columns: Optional[List[str]] = None,
 ) -> None:
     """Append rows to the target table, matching columns to it by NAME.
 
     The file is loaded into a staging table first and then INSERTed into the
     target by column name — never loaded positionally into the target. This
-    lets an append accept files whose columns are reordered and lets brand-new
-    columns appear anywhere in the file (not only at the end): any column the
-    target lacks is added before the INSERT, and a target column absent from the
-    file is left NULL for the new rows. Works uniformly for every source format.
+    lets an append accept files whose columns are reordered. The column SET must
+    be the table's own: a column the target lacks fails the run
+    (`ColumnMismatchError`) instead of being added; only Replace or
+    `datastore_create` change the columns. Works uniformly for every source
+    format.
 
     The row-number and record-updated-at values are baked into the staged file
     (see the streamer), so the INSERT carries them straight through — no
@@ -782,9 +838,15 @@ def append_flow(
 
     ensure_target_exists_from_stage(client, target_fqn, stage_fqn)
     stage_table = client.get_table(stage_fqn)
-    # Add any columns the staged file introduced (new columns can appear anywhere
-    # in the file — they are matched by name, not position).
-    ensure_table_has_fields(client, target_fqn, stage_table.schema)
+    # Columns are matched by name, so they may be reordered, but the set must be
+    # the table's own: appending never adds a column.
+    try:
+        ensure_no_new_columns(client, target_fqn, stage_table.schema, system_columns)
+    except ColumnMismatchError:
+        # The run is rejected, so the staged copy is useless; the next run would
+        # truncate it anyway, but do not leave it sitting in the dataset.
+        drop_stage_table_quietly(client, stage_fqn)
+        raise
 
     col_list = ", ".join(f"`{field.name}`" for field in stage_table.schema)
     logger.info("Appending into %s (columns: %s)", target_fqn, col_list)
@@ -919,6 +981,7 @@ def upsert_flow(
     source_format: str = "csv",
     schema_descriptor: Optional[dict] = None,
     row_number_column: Optional[str] = None,
+    system_columns: Optional[List[str]] = None,
 ) -> None:
     """Complete upsert flow: load stage, merge to target."""
     logger.info("Loading into staging: %s", stage_fqn)
@@ -944,8 +1007,13 @@ def upsert_flow(
     ensure_target_exists_from_stage(client, target_fqn, stage_fqn)
     stage_table = client.get_table(stage_fqn)
     # Stage schema includes record_updated_at (baked in at stream time), so this
-    # also guarantees the column exists on target before the MERGE references it.
-    ensure_table_has_fields(client, target_fqn, stage_table.schema)
+    # also guarantees that system column exists on target before the MERGE
+    # references it. Any other column the target lacks fails the run.
+    try:
+        ensure_no_new_columns(client, target_fqn, stage_table.schema, system_columns)
+    except ColumnMismatchError:
+        drop_stage_table_quietly(client, stage_fqn)
+        raise
 
     logger.info("Upserting into %s using UNIQUE_KEYS=%s", target_fqn, primary_keys)
     merge_upsert_anyvalue_dedup(

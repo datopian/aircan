@@ -48,6 +48,10 @@ def _load_frictionless_descriptor(schema_arg: Any) -> dict:
     return parsed
 
 
+class ColumnMismatchError(ValueError):
+    """The file's columns differ from the columns of the table it loads into."""
+
+
 def sanitize_column_name(name: str) -> str:
     """Sanitize column name for BigQuery compliance.
 

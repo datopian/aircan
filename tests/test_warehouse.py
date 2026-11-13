@@ -3,10 +3,16 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import pytest
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
+from aircan.dependencies.utils.schema import ColumnMismatchError
+
 from aircan.dependencies.cloud.warehouse import (
+    append_flow,
+    ensure_no_new_columns,
     ensure_primary_keys_populated,
+    get_table_column_names,
     merge_upsert_anyvalue_dedup,
     upsert_flow,
 )
@@ -111,7 +117,7 @@ def test_upsert_flow_forwards_custom_row_number_column():
         patch(f"{module}.resolve_primary_keys_from_stage", return_value=["key"]),
         patch(f"{module}.ensure_primary_keys_populated"),
         patch(f"{module}.ensure_target_exists_from_stage"),
-        patch(f"{module}.ensure_table_has_fields"),
+        patch(f"{module}.ensure_no_new_columns"),
         patch(f"{module}.apply_table_options"),
         patch(f"{module}.merge_upsert_anyvalue_dedup") as merge,
     ):
@@ -196,3 +202,109 @@ def test_upsert_flow_rejects_before_touching_the_target():
     ensure_target.assert_not_called()
     merge.assert_not_called()
 
+
+
+def _table_with(*names):
+    table = Mock()
+    table.schema = [bigquery.SchemaField(n, "STRING") for n in names]
+    return table
+
+
+def _fields(*names):
+    return [bigquery.SchemaField(n, "STRING") for n in names]
+
+
+def test_target_columns_are_none_when_the_table_does_not_exist():
+    client = Mock()
+    client.get_table.side_effect = NotFound("missing")
+    assert get_table_column_names(client, "target") is None
+
+
+def test_target_columns_are_listed_in_table_order():
+    client = Mock()
+    client.get_table.return_value = _table_with("_id", "a", "b")
+    assert get_table_column_names(client, "target") == ["_id", "a", "b"]
+
+
+def test_no_new_columns_passes_when_the_stage_matches_the_table():
+    client = Mock()
+    client.get_table.return_value = _table_with("_id", "a", "b", "_updated_at")
+    ensure_no_new_columns(
+        client, "target", _fields("_id", "b", "a", "_updated_at"), ["_id", "_updated_at"]
+    )
+    client.update_table.assert_not_called()
+
+
+def test_no_new_columns_rejects_a_column_the_table_lacks():
+    client = Mock()
+    client.get_table.return_value = _table_with("_id", "a", "_updated_at")
+    with pytest.raises(ColumnMismatchError, match="not in the table: b"):
+        ensure_no_new_columns(
+            client, "target", _fields("_id", "a", "b", "_updated_at"), ["_id", "_updated_at"]
+        )
+    client.update_table.assert_not_called()
+
+
+def test_no_new_columns_still_adds_a_missing_system_column():
+    client = Mock()
+    table = _table_with("_id", "a")
+    client.get_table.return_value = table
+    ensure_no_new_columns(
+        client, "target", _fields("_id", "a", "_updated_at"), ["_id", "_updated_at"]
+    )
+    assert [f.name for f in table.schema] == ["_id", "a", "_updated_at"]
+    client.update_table.assert_called_once()
+
+
+def test_append_flow_rejects_new_column_before_inserting():
+    module = "aircan.dependencies.cloud.warehouse"
+    client = Mock()
+    # append_flow reads the stage table first, then the target.
+    client.get_table.side_effect = [_table_with("_id", "a", "b"), _table_with("_id", "a")]
+    with (
+        patch(f"{module}.load_gcs_to_bq_table"),
+        patch(f"{module}.ensure_target_exists_from_stage"),
+    ):
+        with pytest.raises(ColumnMismatchError):
+            append_flow(
+                client, "gs://bucket/test.csv", "NONE", "target", "stage", None, 1,
+                system_columns=["_id"],
+            )
+    client.query.assert_not_called()
+    client.delete_table.assert_called_once_with("stage", not_found_ok=True)
+
+
+def test_append_flow_keeps_the_column_error_when_stage_cleanup_fails():
+    module = "aircan.dependencies.cloud.warehouse"
+    client = Mock()
+    client.get_table.side_effect = [_table_with("_id", "a", "b"), _table_with("_id", "a")]
+    client.delete_table.side_effect = RuntimeError("cleanup failed")
+    with (
+        patch(f"{module}.load_gcs_to_bq_table"),
+        patch(f"{module}.ensure_target_exists_from_stage"),
+    ):
+        with pytest.raises(ColumnMismatchError):
+            append_flow(
+                client, "gs://bucket/test.csv", "NONE", "target", "stage", None, 1,
+                system_columns=["_id"],
+            )
+
+
+def test_upsert_flow_drops_the_stage_table_on_column_mismatch():
+    module = "aircan.dependencies.cloud.warehouse"
+    client = Mock()
+    client.get_table.side_effect = [_table_with("_id", "a", "b"), _table_with("_id", "a")]
+    with (
+        patch(f"{module}.load_gcs_to_bq_table"),
+        patch(f"{module}.resolve_primary_keys_from_stage", return_value=["a"]),
+        patch(f"{module}.ensure_primary_keys_populated"),
+        patch(f"{module}.ensure_target_exists_from_stage"),
+        patch(f"{module}.merge_upsert_anyvalue_dedup") as merge,
+    ):
+        with pytest.raises(ColumnMismatchError):
+            upsert_flow(
+                client, "gs://bucket/test.csv", "NONE", "target", "stage",
+                ["a"], None, 1, system_columns=["_id"],
+            )
+    merge.assert_not_called()
+    client.delete_table.assert_called_once_with("stage", not_found_ok=True)

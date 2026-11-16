@@ -25,7 +25,7 @@ def frictionless_to_bigquery_schema(field_type: str) -> str:
         "time": "TIME",
         "year": "INT64",
         "yearmonth": "STRING",
-        "duration": "INTERVAL",
+        "duration": "STRING",
         "geopoint": "GEOGRAPHY",
         "geojson": "GEOGRAPHY",
         "any": "STRING",

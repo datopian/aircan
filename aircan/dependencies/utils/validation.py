@@ -10,6 +10,22 @@ from .schema import sanitize_column_name
 logger = logging.getLogger(__name__)
 
 
+def _relax_array_fields(descriptor: dict) -> dict:
+    """Validate ``array`` fields as strings.
+
+    Frictionless only accepts JSON arrays, but ingestion also accepts
+    comma-separated values (``a,b``) and normalises them, so validation must
+    not reject what the load would accept.
+    """
+    fields = [
+        {**f, "type": "string"}
+        if isinstance(f, dict) and str(f.get("type")).lower() == "array"
+        else f
+        for f in descriptor.get("fields", [])
+    ]
+    return {**descriptor, "fields": fields}
+
+
 class ResourceValidator:
     """Validates a single resource using the authenticated CKAN HTTP session."""
 
@@ -64,7 +80,7 @@ class ResourceValidator:
                     for col_name in header
                 ]
 
-            schema_obj = Schema.from_descriptor(schema_descriptor)
+            schema_obj = Schema.from_descriptor(_relax_array_fields(schema_descriptor))
             resource = Resource(self.source_file, schema=schema_obj)
             report = resource.validate(
                 limit_rows=self.limit_rows,
@@ -81,7 +97,7 @@ class ResourceValidator:
                 self.source_file,
                 self.fmt,
             )
-            schema_obj = Schema.from_descriptor(self.schema)
+            schema_obj = Schema.from_descriptor(_relax_array_fields(self.schema))
             resource = Resource(self.source_file, schema=schema_obj, format=self.fmt)
             report = resource.validate(
                 limit_rows=self.limit_rows,

@@ -29,6 +29,7 @@ from aircan.dependencies.utils.schema import (
 )
 from aircan.dependencies.cloud.clients import bq_client, gcs_client, s3_client
 from aircan.dependencies.cloud.storage import (
+    CELL_CASTS,
     gcs_object_name,
     filename_from_resource,
     read_parquet_footer_schema,
@@ -440,6 +441,16 @@ def prepare_and_upload_task() -> Dict[str, Any]:
         if str(field.get("name", "")).strip() not in system_columns
     ]
 
+    # Columns whose values BigQuery can't parse as written: array accepts JSON
+    # (["a","b"]) or comma-separated (a,b) -> JSON array; geopoint "lon, lat"
+    # / [lon, lat] / {"lon","lat"} -> WKT POINT; geojson Feature /
+    # FeatureCollection -> bare geometry. Keyed like date_formats.
+    cast_columns = {
+        idx: str(field.get("type")).lower()
+        for idx, field in enumerate(descriptor.get("fields", []))
+        if str(field.get("type")).lower() in CELL_CASTS
+    }
+
     streamer_kwargs = {}
     if gcs_config.get("chunk_size"):
         streamer_kwargs["gcs_chunk_size"] = int(gcs_config["chunk_size"])
@@ -470,6 +481,7 @@ def prepare_and_upload_task() -> Dict[str, Any]:
             job_timestamp=job_timestamp,
             field_order=field_order,
             expected_columns=expected_columns,
+            cast_columns=cast_columns,
             **streamer_kwargs,
         ).stream()
     except ColumnMismatchError as exc:

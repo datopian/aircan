@@ -99,6 +99,107 @@ def check_columns_match(
     )
 
 
+def _to_json_array(value):
+    """Normalise a frictionless ``array`` value to a JSON array for BigQuery.
+
+    Accepts a JSON array (``["wind","solar"]``, kept as-is) as well as the
+    bracketless / unquoted forms publishers commonly write (``wind,solar``,
+    ``[wind, solar]``, ``['wind','solar']``), which are split on commas into a
+    list of strings. Strings come in from CSV cells and return a JSON string;
+    already-parsed lists (JSON sources) pass through. Empty -> NULL.
+    """
+    if value is None or isinstance(value, list):
+        return value
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        if isinstance(_json.loads(text), list):
+            return text
+    except ValueError:
+        pass
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    items = [item.strip().strip("'\"").strip() for item in text.split(",")]
+    return _json.dumps([item for item in items if item])
+
+
+def _to_wkt_point(value):
+    """Normalise a frictionless ``geopoint`` value to WKT for BigQuery GEOGRAPHY.
+
+    BigQuery only parses WKT / GeoJSON, but frictionless geopoints come as
+    ``"lon, lat"`` (default), ``[lon, lat]`` (array) or ``{"lon": .., "lat": ..}``
+    (object). All three become ``POINT(lon lat)``; a GeoJSON geometry object is
+    passed through as GeoJSON. Anything unrecognised is returned unchanged so
+    BigQuery reports a clear per-row error. Empty -> NULL.
+    """
+    original = value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        try:
+            value = _json.loads(text)
+        except ValueError:
+            value = text.split(",")
+    if isinstance(value, dict):
+        if "type" in value:
+            return _json.dumps(value)
+        value = [value.get("lon"), value.get("lat")]
+    try:
+        lon, lat = (float(v) for v in value)
+    except (TypeError, ValueError):
+        return original
+    return f"POINT({lon!r} {lat!r})"
+
+
+def _to_geojson_geometry(value):
+    """Normalise a frictionless ``geojson`` value to a bare geometry for GEOGRAPHY.
+
+    BigQuery only parses GeoJSON *geometries*; a ``Feature`` is unwrapped to its
+    geometry and a ``FeatureCollection`` becomes a ``GeometryCollection`` of its
+    features' geometries. Geometries (and WKT text) pass through; anything
+    unparseable is returned unchanged so BigQuery reports a per-row error.
+    Empty -> NULL.
+    """
+    original = value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if not value.strip():
+            return ""
+        try:
+            value = _json.loads(value)
+        except ValueError:
+            return original
+    if not isinstance(value, dict):
+        return original
+    if value.get("type") == "Feature":
+        value = value.get("geometry")
+    elif value.get("type") == "FeatureCollection":
+        value = {
+            "type": "GeometryCollection",
+            "geometries": [
+                f.get("geometry") for f in value.get("features") or [] if f.get("geometry")
+            ],
+        }
+    if value is None:
+        return None
+    return _json.dumps(value)
+
+
+# Per-cell value casts by frictionless type, applied while streaming so values
+# BigQuery can't parse as-is still load. Each takes a raw cell and returns the
+# text to write (CSV); JSON sources re-parse array output back into a list.
+CELL_CASTS = {
+    "array": _to_json_array,
+    "geopoint": _to_wkt_point,
+    "geojson": _to_geojson_geometry,
+}
+
+
 class HttpToGCSStreamer:
     """Streams an HTTP resource directly to GCS with row numbers injected."""
 
@@ -120,6 +221,7 @@ class HttpToGCSStreamer:
         job_timestamp: Optional[datetime] = None,
         field_order: Optional[list] = None,
         expected_columns: Optional[list] = None,
+        cast_columns: Optional[dict] = None,
     ):
         self.http_url = http_url
         self.storage_client = storage_client
@@ -167,6 +269,19 @@ class HttpToGCSStreamer:
         # table lacks fails too (a JSON row that omits a key is null-filled).
         # None for Replace and first loads.
         self.expected_columns = expected_columns
+        # {column_index: frictionless_type} for columns whose values need a
+        # CELL_CASTS rewrite (array -> JSON array, geopoint -> WKT). Keyed like
+        # date_formats; JSON sources look the same columns up by name.
+        self.cast_columns = {
+            idx: fr_type
+            for idx, fr_type in (cast_columns or {}).items()
+            if fr_type in CELL_CASTS
+        }
+        self.cast_names = {
+            self.field_order[idx]: fr_type
+            for idx, fr_type in self.cast_columns.items()
+            if self.field_order and idx < len(self.field_order)
+        }
 
     def _blob(self):
         return self.storage_client.bucket(self.bucket_name).blob(self.object_name)
@@ -191,7 +306,15 @@ class HttpToGCSStreamer:
             )
         if self.field_order is not None:
             src = {sanitize_column_name(str(k)): v for k, v in obj.items()}
-            return {name: src.get(name) for name in self.field_order}
+            out = {name: src.get(name) for name in self.field_order}
+            for name, fr_type in self.cast_names.items():
+                value = CELL_CASTS[fr_type](out[name])
+                if value == "":
+                    value = None
+                elif fr_type == "array" and isinstance(value, str):
+                    value = _json.loads(value)
+                out[name] = value
+            return out
         return {
             k: v for k, v in obj.items()
             if str(k).strip() not in self.system_columns
@@ -348,6 +471,9 @@ class HttpToGCSStreamer:
                         for idx, (fr_type, src_fmt) in self.date_formats.items():
                             if idx < len(out):
                                 out[idx] = _reformat_temporal(out[idx], fr_type, src_fmt)
+                        for idx, fr_type in self.cast_columns.items():
+                            if idx < len(out):
+                                out[idx] = CELL_CASTS[fr_type](out[idx])
                         # Constant record-updated-at appended after reformatting so
                         # the index-based date_formats can never touch it.
                         if updated_col:
